@@ -1,0 +1,205 @@
+package rustrush
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestRunWorkloadIsDeterministic(t *testing.T) {
+	first := RunWorkload(100_000)
+	second := RunWorkload(100_000)
+	if first != second {
+		t.Fatalf("same workload returned different checksums: %d != %d", first, second)
+	}
+}
+
+func TestSummarizeUsesNearestRankAndMedianThroughput(t *testing.T) {
+	samples := []Sample{{DurationNS: 100}, {DurationNS: 300}, {DurationNS: 200}, {DurationNS: 400}, {DurationNS: 500}}
+	summary, err := Summarize(samples, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.MedianNS != 300 || summary.P95NS != 500 || summary.P99NS != 500 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	if summary.OpsPerSec < 33_333_333 || summary.OpsPerSec > 33_333_334 {
+		t.Fatalf("unexpected throughput: %f", summary.OpsPerSec)
+	}
+}
+
+func TestSummarizeRejectsMissingAndInvalidSamples(t *testing.T) {
+	if _, err := Summarize(nil, 1); err == nil {
+		t.Fatal("expected empty samples to be rejected")
+	}
+	if _, err := Summarize([]Sample{{DurationNS: 0}}, 1); err == nil {
+		t.Fatal("expected zero duration to be rejected")
+	}
+}
+
+func TestDecideRequiresCorrectnessAndReliableEvidence(t *testing.T) {
+	baseline := Measurement{
+		Status: "measured", Iterations: 100, OpsPerSec: 100,
+		Samples: []Sample{{DurationNS: 100}, {DurationNS: 101}, {DurationNS: 99}},
+	}
+	candidate := Measurement{
+		Status: "measured", Iterations: 100, OpsPerSec: 120,
+		Samples: []Sample{{DurationNS: 80}, {DurationNS: 81}, {DurationNS: 79}},
+	}
+	verdict, _ := Decide("NOT_RUN", baseline, candidate)
+	if verdict != VerdictInconclusive {
+		t.Fatalf("incorrectness did not invalidate verdict: %s", verdict)
+	}
+	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
+	if verdict != VerdictPort {
+		t.Fatalf("expected PORT for reliable gain, got %s", verdict)
+	}
+	candidate.OpsPerSec = 80
+	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
+	if verdict != VerdictDontPort {
+		t.Fatalf("expected DONT_PORT for reliable regression, got %s", verdict)
+	}
+	candidate.OpsPerSec = 101
+	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
+	if verdict != VerdictOptimizeFirst {
+		t.Fatalf("expected OPTIMIZE_FIRST for marginal gain, got %s", verdict)
+	}
+	candidate.Samples = []Sample{{DurationNS: 20}, {DurationNS: 100}, {DurationNS: 300}}
+	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
+	if verdict != VerdictInconclusive {
+		t.Fatalf("noisy measurements did not produce an inconclusive verdict: %s", verdict)
+	}
+}
+
+func TestAnalyzeSkipsDependenciesAndSensitiveFiles(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"main.go":                          "package main\nfunc f() { for i := 0; i < 10; i++ {} }\n",
+		".env":                             "SAMPLE=ignored-fixture",
+		"credentials.json":                 `{"fixture":"ignored-fixture"}`,
+		"secrets/private.go":               "package secrets\nfunc leak() { for {} }",
+		"node_modules/dependency/index.js": "const x = JSON.parse('{}')",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FilesInspected != 1 || len(result.Languages) != 1 || result.Languages[0] != "Go" {
+		t.Fatalf("sensitive, generated, or dependency file was inspected: %+v", result)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Category != "cpu_hypothesis" {
+		t.Fatalf("expected one static CPU hypothesis, got %+v", result.Findings)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "ignored-fixture") {
+		t.Fatal("analysis output contains sensitive file contents")
+	}
+}
+
+func TestAnalyzeGoIgnoresPatternWordsInStringsAndComments(t *testing.T) {
+	root := t.TempDir()
+	source := `package main
+// for SELECT name FROM users fetch(
+const example = "for SELECT name FROM users fetch("
+`
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("comments or string literals created static findings: %+v", result.Findings)
+	}
+}
+
+func TestReadReportValidatesSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	report := Report{SchemaVersion: SchemaVersion, Project: "sample", Component: "operation", Verdict: VerdictInconclusive}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadReport(path); err != nil {
+		t.Fatalf("valid report rejected: %v", err)
+	}
+	report.SchemaVersion = "999"
+	data, _ = json.Marshal(report)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadReport(path); err == nil {
+		t.Fatal("unsupported schema version was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"schema_version":"1.0","project":"p","component":"c","verdict":"INCONCLUSIVE"} {}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadReport(path); err == nil {
+		t.Fatal("trailing report data was accepted")
+	}
+	report.SchemaVersion = SchemaVersion
+	report.Verdict = "NOT_A_VERDICT"
+	data, _ = json.Marshal(report)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadReport(path); err == nil {
+		t.Fatal("invalid verdict was accepted")
+	}
+}
+
+func TestCompareReportsRefusesDifferentWorkloads(t *testing.T) {
+	first := Report{Project: "a", Component: "x", Workload: "one", Iterations: 5}
+	second := Report{Project: "b", Component: "y", Workload: "two", Iterations: 5}
+	if !strings.Contains(CompareReports(first, second), "component or workload definitions differ") {
+		t.Fatal("different workload definitions were treated as comparable")
+	}
+}
+
+func TestCompareReportsRefusesDifferentEnvironments(t *testing.T) {
+	first := Report{Project: "a", Component: "same", Workload: "same", Iterations: 5, Environment: map[string]string{"os": "windows"}}
+	second := Report{Project: "b", Component: "same", Workload: "same", Iterations: 5, Environment: map[string]string{"os": "linux"}}
+	if !strings.Contains(CompareReports(first, second), `environment metadata differs for "os"`) {
+		t.Fatal("different environments were treated as comparable")
+	}
+}
+
+func TestRenderMarkdownMarksMissingMetricsAsUnavailable(t *testing.T) {
+	report := Report{SchemaVersion: SchemaVersion, Measurements: []Measurement{{Name: "Rust candidate", Status: "unavailable"}}}
+	rendered := RenderMarkdown(report)
+	if !strings.Contains(rendered, "| Rust candidate | unavailable | n/a | n/a | n/a | n/a | n/a | n/a |") {
+		t.Fatalf("missing metrics were rendered as numeric values: %s", rendered)
+	}
+}
+
+func TestRedactBuildOutputRemovesLocalPaths(t *testing.T) {
+	source := `C:\Users\private\RustRush\examples\cpu-heavy\candidate.rs`
+	tempDir := `C:\Users\private\AppData\Local\Temp\rustrush-demo`
+	rustc := `C:\Users\private\.cargo\bin\rustc.exe`
+	output := redactBuildOutput(source+" "+tempDir+" "+rustc, source, tempDir, rustc)
+	if strings.Contains(output, `C:\Users\private`) {
+		t.Fatalf("local path was not redacted: %s", output)
+	}
+	if !strings.Contains(output, "[candidate source]") ||
+		!strings.Contains(output, "[temporary build directory]") ||
+		!strings.Contains(output, "[rustc]") {
+		t.Fatalf("expected sanitized diagnostic placeholders, got %s", output)
+	}
+}

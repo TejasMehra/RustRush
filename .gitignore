@@ -1,0 +1,18 @@
+# Private project planning — never commit
+/RUSHRUSH_PLAN.md
+
+# Local outputs and credentials
+/results/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Go build and test outputs
+/rustrush
+/rustrush.exe
+*.test
+coverage.out

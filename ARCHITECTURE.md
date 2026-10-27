@@ -17,7 +17,7 @@ RustRush currently uses Go's standard library and has no third-party runtime dep
 
 `analyze` discovers source files and produces an inventory plus static pattern findings. The findings cannot be used as measurement evidence.
 
-`demo` launches the selected Go baseline and, when available, compiles and launches the corresponding built-in Rust candidate. Both receive the same fixture and iteration count and emit a deterministic result. A mismatch prevents a positive verdict. The CLI records each measured trial and environment metadata in schema version `1.0`, then writes JSON and Markdown locally. `roi` separately calculates estimates from explicit user-supplied assumptions; it does not infer ROI from benchmark wall time.
+`demo` compiles the selected built-in Rust candidate when available, then runs untimed Go/Rust correctness probes before starting paired timings. Both implementations receive the same fixture and iteration count. After the correctness gate, each gets a warm-up and paired repeated runs in alternating order. A mismatch prevents timed comparison; failed, missing, invalid, or noisy samples produce `INCONCLUSIVE`. The CLI records raw process durations, process-level error counts, aggregates, and environment metadata in schema version `1.1` (and reads `1.0` reports), then writes JSON and Markdown locally. `roi` separately calculates estimates from explicit user-supplied assumptions; it does not infer ROI from benchmark wall time.
 
 Reports do not include source contents or absolute project paths. The report schema and fields are documented in [docs/report-schema.md](docs/report-schema.md).
 

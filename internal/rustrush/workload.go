@@ -21,7 +21,10 @@ type DemoOptions struct {
 	Timeout     time.Duration
 	Executable  string
 	SourceRoot  string
+	runProcess  processRunner
 }
+
+type processRunner func(context.Context, string, []string, string, []string) (Sample, error)
 
 func RunWorkload(iterations uint64) uint64 {
 	value := uint64(0x9e3779b97f4a7c15)
@@ -76,8 +79,8 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	default:
 		return Report{}, fmt.Errorf("unsupported demo workload %q; choose cpu, json, or database-fixture", options.Workload)
 	}
-	reproduction := fmt.Sprintf("go run ./cmd/rustrush demo --workload %s --iterations %d --repetitions %d",
-		options.Workload, options.Iterations, options.Repetitions)
+	reproduction := fmt.Sprintf("go run ./cmd/rustrush demo --workload %s --iterations %d --repetitions %d --timeout %s",
+		options.Workload, options.Iterations, options.Repetitions, options.Timeout)
 	report := Report{
 		SchemaVersion: SchemaVersion,
 		GeneratedAt:   time.Now().UTC(),
@@ -93,7 +96,12 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 			"CPU model and background system load are not captured.",
 		},
 		Reproduction: reproduction,
-		Assumptions:  map[string]string{"timing_scope": "process startup plus workload execution", "warmup_runs": "1 per implementation"},
+		Assumptions: map[string]string{
+			"timing_scope":  "process startup plus workload execution",
+			"latency_scope": "one process wall-clock duration per repetition",
+			"warmup_runs":   "1 per implementation",
+			"trial_order":   "alternating Go/Rust then Rust/Go, starting with Go",
+		},
 	}
 	if options.Workload == "json" {
 		report.Limitations = append(report.Limitations, "The Rust JSON parser supports only the built-in integer-array fixture shape.")
@@ -101,14 +109,20 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	if options.Workload == "database-fixture" {
 		report.Limitations = append(report.Limitations, "This workload is a CSV mock and does not model a database, query planner, connection, or network.")
 	}
-	goMeasurement, err := measure(ctx, options, "Go baseline", options.Executable, baselinePrefix)
-	if err != nil {
-		return Report{}, err
-	}
-	report.Measurements = append(report.Measurements, goMeasurement)
-
 	rustc, _ := exec.LookPath("rustc")
 	if rustc == "" {
+		goMeasurement, measureErr := measure(ctx, options, "Go baseline", options.Executable, baselinePrefix)
+		redactMeasurementError(&goMeasurement, options.Executable, sourceRoot)
+		report.Measurements = append(report.Measurements, goMeasurement)
+		if measureErr != nil {
+			report.Reason = "The Go baseline failed or timed out; a performance comparison was not made."
+			report.Limitations = append(report.Limitations, "Baseline execution failed; no cross-implementation measurements are accepted.")
+			report.Measurements = append(report.Measurements, Measurement{
+				Name: "Rust candidate", Status: "unavailable", Iterations: options.Iterations,
+				Samples: []Sample{}, Error: "rustc was not found on PATH",
+			})
+			return report, nil
+		}
 		report.Measurements = append(report.Measurements, Measurement{
 			Name: "Rust candidate", Status: "unavailable", Iterations: options.Iterations,
 			Samples: []Sample{}, Error: "rustc was not found on PATH",
@@ -122,6 +136,7 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	versionCommand.Env = compilerEnvironment()
 	version, versionErr := versionCommand.Output()
 	cancelVersion()
+	report.Environment["rustc_flags"] = "--edition=2021 -C opt-level=3"
 	if versionErr == nil {
 		report.Environment["rustc"] = strings.TrimSpace(string(version))
 	} else {
@@ -152,10 +167,17 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	build.Stdout = &buildOutput
 	build.Stderr = &buildOutput
 	if err := build.Run(); err != nil {
+		goMeasurement, measureErr := measure(ctx, options, "Go baseline", options.Executable, baselinePrefix)
+		redactMeasurementError(&goMeasurement, options.Executable, sourceRoot)
+		report.Measurements = append(report.Measurements, goMeasurement)
 		buildError := redactBuildOutput(buildOutput.String(), source, tempDir, rustc)
+		buildStatus := "build_failed"
+		if errors.Is(buildCtx.Err(), context.DeadlineExceeded) {
+			buildStatus = "timed_out"
+		}
 		report.Measurements = append(report.Measurements, Measurement{
-			Name: "Rust candidate", Status: "build_failed", Iterations: options.Iterations,
-			Samples: []Sample{}, Error: buildError,
+			Name: "Rust candidate", Status: buildStatus, Iterations: options.Iterations,
+			Samples: []Sample{}, ErrorCount: 1, Error: buildError,
 		})
 		if report.Measurements[len(report.Measurements)-1].Error == "" {
 			report.Measurements[len(report.Measurements)-1].Error = redactPath(err.Error(), rustc, "[rustc]")
@@ -163,31 +185,41 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 		report.Correctness = "NOT_RUN"
 		report.Reason = "The Rust candidate did not build; a performance comparison was not made."
 		report.Limitations = append(report.Limitations, "Candidate compilation failed; no Rust performance measurements are available.")
+		if measureErr != nil {
+			report.Limitations = append(report.Limitations, "The Go baseline also failed or timed out.")
+		}
 		if cleanupErr := cleanup(); cleanupErr != nil {
 			return Report{}, cleanupErr
 		}
 		return report, nil
 	}
 
-	rustMeasurement, err := measure(ctx, options, "Rust candidate", candidate, candidateArgs)
-	if err != nil {
-		failure := redactPath(err.Error(), candidate, "[candidate]")
-		failure = redactPath(failure, tempDir, "[temporary build directory]")
-		rustMeasurement = Measurement{Name: "Rust candidate", Status: "failed", Iterations: options.Iterations, Samples: []Sample{}, Error: failure}
-		report.Measurements = append(report.Measurements, rustMeasurement)
-		report.Correctness = "FAILED"
-		report.Reason = "The Rust candidate failed to execute reliably; its performance must not be used."
-		report.Limitations = append(report.Limitations, "A failed candidate execution invalidates performance comparison.")
+	goMeasurement, rustMeasurement, correctnessPassed, pairErr := measurePair(
+		ctx, options, options.Executable, baselinePrefix, candidate, candidateArgs,
+	)
+	redactMeasurementError(&goMeasurement, options.Executable, sourceRoot)
+	if rustMeasurement.Error != "" {
+		rustMeasurement.Error = redactPath(rustMeasurement.Error, candidate, "[candidate]")
+		rustMeasurement.Error = redactPath(rustMeasurement.Error, tempDir, "[temporary build directory]")
+	}
+	report.Measurements = append(report.Measurements, goMeasurement, rustMeasurement)
+	if pairErr != nil {
+		if correctnessPassed {
+			report.Correctness = "PASSED_FOR_CHECKSUM"
+		} else {
+			report.Correctness = "NOT_RUN"
+		}
+		report.Reason = "One or both implementations failed or timed out; their performance cannot be compared."
+		report.Limitations = append(report.Limitations, "Failed or timed-out execution invalidates the comparison.")
 		if cleanupErr := cleanup(); cleanupErr != nil {
 			return Report{}, cleanupErr
 		}
 		return report, nil
 	}
-	report.Measurements = append(report.Measurements, rustMeasurement)
-	if !outputsMatch(goMeasurement, rustMeasurement) {
+	if !correctnessPassed {
 		report.Correctness = "FAILED"
-		report.Reason = "The implementations returned different checksums; performance comparison is invalid."
-		report.Limitations = append(report.Limitations, "Correctness mismatch detected before interpreting performance.")
+		report.Reason = "The correctness probes returned different outputs; timed performance runs were not started."
+		report.Limitations = append(report.Limitations, "Correctness mismatch detected before any timed comparison.")
 		if cleanupErr := cleanup(); cleanupErr != nil {
 			return Report{}, cleanupErr
 		}
@@ -195,14 +227,17 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	}
 	report.Correctness = "PASSED_FOR_CHECKSUM"
 	report.Verdict, report.Reason = Decide(report.Correctness, goMeasurement, rustMeasurement)
-	deltaOps := rustMeasurement.OpsPerSec - goMeasurement.OpsPerSec
-	deltaPercent := deltaOps / goMeasurement.OpsPerSec * 100
-	report.ThroughputDeltaOpsPerSec = &deltaOps
-	report.ThroughputDeltaPercent = &deltaPercent
+	if report.Verdict != VerdictInconclusive {
+		deltaOps := rustMeasurement.OpsPerSec - goMeasurement.OpsPerSec
+		deltaPercent := deltaOps / goMeasurement.OpsPerSec * 100
+		report.ThroughputDeltaOpsPerSec = &deltaOps
+		report.ThroughputDeltaPercent = &deltaPercent
+	}
 	report.Limitations = append(report.Limitations,
 		"Process startup is included in each sample and can dominate short workloads.",
 		"A checksum match does not establish full semantic equivalence.",
 		"One synthetic CPU workload is not representative evidence for an application or backend.",
+		"Paired trials alternate implementation order to reduce systematic order bias; this does not eliminate machine noise.",
 	)
 	if err := cleanup(); err != nil {
 		return Report{}, err
@@ -210,22 +245,143 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	return report, nil
 }
 
-func outputsMatch(baseline, candidate Measurement) bool {
-	if len(baseline.Samples) == 0 || len(candidate.Samples) == 0 {
-		return false
+func redactMeasurementError(measurement *Measurement, executable, sourceRoot string) {
+	measurement.Error = redactPath(measurement.Error, executable, "[Go executable]")
+	measurement.Error = redactPath(measurement.Error, sourceRoot, "[project]")
+	measurement.Error = redactPath(measurement.Error, filepath.ToSlash(sourceRoot), "[project]")
+}
+
+func measurePair(
+	ctx context.Context,
+	options DemoOptions,
+	baselineExecutable string,
+	baselinePrefix []string,
+	candidateExecutable string,
+	candidatePrefix []string,
+) (Measurement, Measurement, bool, error) {
+	baseline := newMeasurement("Go baseline", options)
+	candidate := newMeasurement("Rust candidate", options)
+	run := func(executable string, prefix []string) (Sample, error) {
+		runCtx, cancel := context.WithTimeout(ctx, options.Timeout)
+		defer cancel()
+		args := append(append([]string(nil), prefix...), "--iterations", strconv.FormatUint(options.Iterations, 10))
+		if options.runProcess != nil {
+			return options.runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
+		}
+		return runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
 	}
-	expected := baseline.Samples[0].Output
-	for _, sample := range baseline.Samples {
-		if sample.Output != expected {
-			return false
+	baseline.Status = "measured"
+	goWarmup, err := run(baselineExecutable, baselinePrefix)
+	if err != nil {
+		recordMeasurementFailure(&baseline, err)
+		candidate.Status = "not_run"
+		return baseline, candidate, false, err
+	}
+	baseline.WarmupRuns = 1
+	candidate.Status = "measured"
+	rustWarmup, err := run(candidateExecutable, candidatePrefix)
+	if err != nil {
+		recordMeasurementFailure(&candidate, err)
+		baseline.Status = "incomplete"
+		return baseline, candidate, false, err
+	}
+	candidate.WarmupRuns = 1
+	if goWarmup.Output == "" || rustWarmup.Output == "" {
+		baseline.Status = "correctness_failed"
+		candidate.Status = "correctness_failed"
+		candidate.ErrorCount = 1
+		candidate.Error = "correctness probe returned empty output"
+		return baseline, candidate, false, nil
+	}
+	if goWarmup.Output != rustWarmup.Output {
+		baseline.Status = "correctness_failed"
+		candidate.Status = "correctness_failed"
+		candidate.ErrorCount = 1
+		candidate.Error = "correctness probe output did not match the Go baseline"
+		return baseline, candidate, false, nil
+	}
+	baseline.CorrectnessOutput = goWarmup.Output
+	candidate.CorrectnessOutput = rustWarmup.Output
+	for i := 0; i < options.Repetitions; i++ {
+		order := []struct {
+			measurement *Measurement
+			executable  string
+			prefix      []string
+			expected    string
+		}{
+			{&baseline, baselineExecutable, baselinePrefix, goWarmup.Output},
+			{&candidate, candidateExecutable, candidatePrefix, rustWarmup.Output},
+		}
+		if i%2 == 1 {
+			order[0], order[1] = order[1], order[0]
+		}
+		for _, trial := range order {
+			sample, err := run(trial.executable, trial.prefix)
+			if err != nil {
+				recordMeasurementFailure(trial.measurement, err)
+				if baseline.Status == "measured" {
+					baseline.Status = "incomplete"
+				}
+				if candidate.Status == "measured" {
+					candidate.Status = "incomplete"
+				}
+				return baseline, candidate, true, err
+			}
+			if sample.Output != trial.expected {
+				baseline.Samples = nil
+				candidate.Samples = nil
+				baseline.Status = "correctness_failed"
+				candidate.Status = "correctness_failed"
+				trial.measurement.ErrorCount = 1
+				trial.measurement.Error = fmt.Sprintf("trial %d output differed from its correctness probe", i+1)
+				return baseline, candidate, false, nil
+			}
+			trial.measurement.Samples = append(trial.measurement.Samples, sample)
 		}
 	}
-	for _, sample := range candidate.Samples {
-		if sample.Output != expected {
-			return false
-		}
+	if err := summarizeMeasurement(&baseline); err != nil {
+		recordMeasurementFailure(&baseline, err)
+		candidate.Status = "incomplete"
+		return baseline, candidate, true, err
 	}
-	return true
+	if err := summarizeMeasurement(&candidate); err != nil {
+		recordMeasurementFailure(&candidate, err)
+		baseline.Status = "incomplete"
+		return baseline, candidate, true, err
+	}
+	return baseline, candidate, true, nil
+}
+
+func newMeasurement(name string, options DemoOptions) Measurement {
+	return Measurement{
+		Name: name, Status: "not_run", Iterations: options.Iterations,
+		Repetitions: options.Repetitions,
+		Samples:     make([]Sample, 0, options.Repetitions),
+	}
+}
+
+func recordMeasurementFailure(measurement *Measurement, err error) {
+	measurement.ErrorCount++
+	measurement.Error = err.Error()
+	if errors.Is(err, context.DeadlineExceeded) {
+		measurement.Status = "timed_out"
+	} else {
+		measurement.Status = "failed"
+	}
+}
+
+func summarizeMeasurement(measurement *Measurement) error {
+	summary, err := Summarize(measurement.Samples, measurement.Iterations)
+	if err != nil {
+		return err
+	}
+	measurement.MedianNS = summary.MedianNS
+	measurement.P50NS = summary.P50NS
+	measurement.P95NS = summary.P95NS
+	measurement.P99NS = summary.P99NS
+	measurement.OpsPerSec = summary.OpsPerSec
+	measurement.CoefficientOfVariation = summary.CoefficientOfVariation
+	return nil
 }
 
 func redactBuildOutput(output, source, tempDir, rustc string) string {
@@ -256,46 +412,59 @@ func measure(ctx context.Context, options DemoOptions, name, executable string, 
 		runCtx, cancel := context.WithTimeout(ctx, options.Timeout)
 		defer cancel()
 		args := append(append([]string(nil), prefix...), "--iterations", strconv.FormatUint(options.Iterations, 10))
-		command := exec.CommandContext(runCtx, executable, args...)
-		command.Env = minimalEnvironment()
-		command.Dir = options.SourceRoot
-		start := time.Now()
-		output, err := command.Output()
-		duration := time.Since(start)
-		if err != nil {
-			if runCtx.Err() != nil {
-				return Sample{}, fmt.Errorf("workload timed out after %s", options.Timeout)
-			}
-			return Sample{}, fmt.Errorf("run workload: %w", err)
+		if options.runProcess != nil {
+			return options.runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
 		}
-		return Sample{DurationNS: uint64(duration.Nanoseconds()), Output: strings.TrimSpace(string(output))}, nil
+		return runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
+	}
+	result := newMeasurement(name, options)
+	result.Status = "measured"
+	failed := func(err error) (Measurement, error) {
+		recordMeasurementFailure(&result, err)
+		return result, fmt.Errorf("%s: %w", name, err)
 	}
 	warmup, err := run()
 	if err != nil {
-		return Measurement{}, fmt.Errorf("%s warm-up: %w", name, err)
+		return failed(fmt.Errorf("warm-up: %w", err))
 	}
-	result := Measurement{Name: name, Status: "measured", Iterations: options.Iterations, Repetitions: options.Repetitions}
+	result.WarmupRuns = 1
+	if warmup.Output == "" {
+		result.Status = "correctness_failed"
+		result.ErrorCount = 1
+		result.Error = "warm-up returned empty correctness output"
+		return result, fmt.Errorf("%s warm-up returned empty correctness output", name)
+	}
+	result.CorrectnessOutput = warmup.Output
 	for i := 0; i < options.Repetitions; i++ {
 		sample, err := run()
 		if err != nil {
-			return Measurement{}, fmt.Errorf("%s trial %d: %w", name, i+1, err)
+			return failed(fmt.Errorf("trial %d: %w", i+1, err))
 		}
 		if sample.Output != warmup.Output {
-			return Measurement{}, fmt.Errorf("%s trial %d returned a different checksum than warm-up", name, i+1)
+			return failed(fmt.Errorf("trial %d returned a different checksum than warm-up", i+1))
 		}
 		result.Samples = append(result.Samples, sample)
 	}
-	summary, err := Summarize(result.Samples, options.Iterations)
-	if err != nil {
-		return Measurement{}, err
+	if err := summarizeMeasurement(&result); err != nil {
+		return failed(err)
 	}
-	result.MedianNS = summary.MedianNS
-	result.P50NS = summary.P50NS
-	result.P95NS = summary.P95NS
-	result.P99NS = summary.P99NS
-	result.OpsPerSec = summary.OpsPerSec
-	result.CoefficientOfVariation = summary.CoefficientOfVariation
 	return result, nil
+}
+
+func runProcess(ctx context.Context, executable string, args []string, directory string, env []string) (Sample, error) {
+	command := exec.CommandContext(ctx, executable, args...)
+	command.Env = env
+	command.Dir = directory
+	start := time.Now()
+	output, err := command.Output()
+	duration := time.Since(start)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Sample{}, ctx.Err()
+		}
+		return Sample{}, fmt.Errorf("run workload: %w", err)
+	}
+	return Sample{DurationNS: uint64(duration.Nanoseconds()), Output: strings.TrimSpace(string(output))}, nil
 }
 
 func minimalEnvironment() []string {

@@ -10,11 +10,13 @@ This status describes the checked-in implementation; items marked planned are no
 - [x] Deterministic Go baseline and corresponding Rust integer-mixing candidate source.
 - [x] Shared JSON integer-array fixture, Go transformation baseline, and dependency-free Rust candidate for the fixture shape.
 - [x] Shared CSV filter-and-aggregate mock with Go baseline, Rust candidate source, and explicit non-database limitations.
-- [x] Rust-enabled Ubuntu CI compiles and checksum-verifies all three candidate examples; this does not claim a performance win.
-- [x] Checksum correctness gate, warm-up, repeated process timings, raw JSON samples, and honest missing-compiler reporting.
-- [x] Versioned JSON plus local Markdown reports and workload-compatible report comparison.
+- [x] Rust-enabled Ubuntu CI compiles all three candidates and asserts correctness, warm-up, error-count, and repeated-sample report fields; this does not claim a performance win.
+- [x] Untimed cross-language correctness gate before timing; one warm-up and configurable paired repetitions with alternating run order.
+- [x] Raw process timings, throughput, process p50/p95/p99, process error counts, metadata, and inconclusive handling for invalid, failed, missing, or noisy evidence.
+- [x] Versioned JSON plus measured-versus-estimated Markdown reporting, raw samples, and workload-compatible report comparison.
 - [x] Optional ROI calculator with explicit user assumptions, missing-input reporting, and break-even estimates.
-- [x] Unit tests for statistics, analysis exclusions, report validation, and comparison guards.
+- [x] Deterministic tests for benchmark aggregation, paired ordering, correctness gates, failed candidates, timeouts, report output, and invalid evidence.
+- [x] Unit tests for analysis exclusions, report validation, and comparison guards.
 - [x] Unit tests for ROI arithmetic, missing inputs, invalid values, and numeric overflow.
 - [x] README, security notes, architecture, benchmark methodology, schema notes, and CI.
 - [x] Select and add a project license.
@@ -25,7 +27,7 @@ This status describes the checked-in implementation; items marked planned are no
 - [ ] Add isolated candidate templates and application-specific benchmark adapters.
 - [ ] Add profiling adapters and richer evidence-based analysis.
 - [ ] Add sensitivity analysis and connect optional ROI assumptions to exported benchmark reports.
-- [ ] Expand report validation, import/export, redaction regression tests, and statistical reliability analysis.
+- [ ] Expand report validation, import/export, redaction regression tests, and confidence-interval/statistical reliability analysis.
 - [ ] Document supported compiler/platform combinations based on CI evidence.
 - [ ] Consider optional AI candidate generation only after explicit configuration and local workflow maturity.
 

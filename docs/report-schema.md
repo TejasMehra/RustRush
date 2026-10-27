@@ -1,6 +1,6 @@
 # Report schema
 
-RustRush writes UTF-8 JSON with a top-level `schema_version` of `"1.0"`. The CLI validates the version before rendering or comparing a report.
+RustRush writes UTF-8 JSON with a top-level `schema_version` of `"1.1"`. The CLI continues to read the earlier `"1.0"` report shape.
 
 | Field | Meaning |
 |---|---|
@@ -11,10 +11,10 @@ RustRush writes UTF-8 JSON with a top-level `schema_version` of `"1.0"`. The CLI
 | `correctness` | `PASSED_FOR_CHECKSUM`, `FAILED`, or `NOT_RUN` |
 | `verdict`, `reason` | Evidence-limited recommendation and explanation |
 | `throughput_delta_ops_per_sec`, `throughput_delta_percent` | Rust-vs-Go delta when both implementations are validly measured |
-| `environment` | OS, architecture, Go runtime, CPU count, and Rust compiler when available |
-| `measurements` | Per-implementation status, configuration, raw samples, p50/p95/p99, median throughput, and coefficient of variation |
+| `environment` | OS, architecture, Go runtime/compiler, CPU count, Go `GOMAXPROCS`, and Rust compiler/version flags when available |
+| `measurements` | Per-implementation status, repetitions, warm-up count, process error count, correctness-probe output, raw nanosecond samples, process-wall-clock p50/p95/p99, median throughput, and coefficient of variation |
 | `limitations` | Caveats that affect interpretation |
 | `reproduction` | Command used to rerun the workload |
-| `assumptions` | Timing scope and warm-up information |
+| `assumptions` | Process timing scope and warm-up information |
 
-Unavailable or failed measurements are represented by status and error fields; absent values are not replaced with invented numbers. The schema is a local experimental format and is not yet a public interchange or leaderboard contract.
+The latency percentiles are process-level observations, not request-level percentiles. Error counts describe failed or correctness-invalid benchmark attempts. Unavailable, not-run, incomplete, failed, timed-out, and correctness-failed measurements are represented by status and error fields; absent values are not replaced with invented numbers. For legacy `1.0` reports, the reader infers the prior implementation's single warm-up and correctness output for successful measurements and one error for failed/build-failed measurements. The schema is a local experimental format and is not yet a public interchange or leaderboard contract.

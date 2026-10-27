@@ -50,5 +50,18 @@ jobs:
               --iterations 10000 \
               --repetitions 3 \
               --out "$output"
-            grep -q '"correctness": "PASSED_FOR_CHECKSUM"' "$output/latest.json"
+            jq -e '
+              .schema_version == "1.1"
+              and .correctness == "PASSED_FOR_CHECKSUM"
+              and (.measurements | length == 2)
+              and ([.measurements[].correctness_output] | unique | length == 1)
+              and all(.measurements[];
+                .status == "measured"
+                and .warmup_runs == 1
+                and .error_count == 0
+                and .repetitions == 3
+                and (.samples | length) == 3
+                and (. as $measurement | all($measurement.samples[]; .output == $measurement.correctness_output))
+              )
+            ' "$output/latest.json"
           done

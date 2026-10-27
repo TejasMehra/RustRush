@@ -1,12 +1,15 @@
 package rustrush
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunWorkloadIsDeterministic(t *testing.T) {
@@ -122,15 +125,203 @@ func TestSummarizeRejectsMissingAndInvalidSamples(t *testing.T) {
 	}
 }
 
+func TestMeasureAggregatesWarmupsTrialsThroughputAndLatencySamples(t *testing.T) {
+	durations := []uint64{900, 100, 300, 200}
+	calls := 0
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Second,
+		runProcess: func(context.Context, string, []string, string, []string) (Sample, error) {
+			sample := Sample{DurationNS: durations[calls], Output: "stable-checksum"}
+			calls++
+			return sample, nil
+		},
+	}
+	measurement, err := measure(context.Background(), options, "Go baseline", "ignored", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 4 || measurement.WarmupRuns != 1 || measurement.Repetitions != 3 ||
+		measurement.ErrorCount != 0 || len(measurement.Samples) != 3 {
+		t.Fatalf("warm-up/trial accounting is incorrect: calls=%d measurement=%+v", calls, measurement)
+	}
+	if measurement.MedianNS != 200 || measurement.P50NS != 200 ||
+		measurement.P95NS != 300 || measurement.P99NS != 300 ||
+		measurement.OpsPerSec != 50_000_000 {
+		t.Fatalf("unexpected aggregated benchmark values: %+v", measurement)
+	}
+}
+
+func TestMeasureRecordsFailedCandidateAsInvalidEvidence(t *testing.T) {
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Second,
+		runProcess: func(context.Context, string, []string, string, []string) (Sample, error) {
+			return Sample{}, errors.New("candidate exited unsuccessfully")
+		},
+	}
+	candidate, err := measure(context.Background(), options, "Rust candidate", "ignored", nil)
+	if err == nil || candidate.Status != "failed" || candidate.ErrorCount != 1 ||
+		candidate.WarmupRuns != 0 || len(candidate.Samples) != 0 {
+		t.Fatalf("failed candidate evidence was not retained: measurement=%+v error=%v", candidate, err)
+	}
+	verdict, _ := Decide("PASSED_FOR_CHECKSUM", testMeasurement("Go baseline", []uint64{10, 11, 12}, 10), candidate)
+	if verdict != VerdictInconclusive {
+		t.Fatalf("failed candidate received a performance verdict: %s", verdict)
+	}
+}
+
+func TestMeasureRecordsTimeoutAsInconclusiveEvidence(t *testing.T) {
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Nanosecond,
+		runProcess: func(ctx context.Context, _ string, _ []string, _ string, _ []string) (Sample, error) {
+			return Sample{}, context.DeadlineExceeded
+		},
+	}
+	candidate, err := measure(context.Background(), options, "Rust candidate", "ignored", nil)
+	if err == nil || candidate.Status != "timed_out" || candidate.ErrorCount != 1 ||
+		candidate.WarmupRuns != 0 ||
+		!strings.Contains(candidate.Error, "deadline exceeded") {
+		t.Fatalf("timed-out candidate was not reported accurately: measurement=%+v error=%v", candidate, err)
+	}
+	verdict, _ := Decide("PASSED_FOR_CHECKSUM", testMeasurement("Go baseline", []uint64{10, 11, 12}, 10), candidate)
+	if verdict != VerdictInconclusive {
+		t.Fatalf("timed-out candidate received a performance verdict: %s", verdict)
+	}
+}
+
+func TestMeasurePairAlternatesTrialOrderAfterCorrectnessGate(t *testing.T) {
+	var calls []string
+	durations := []uint64{900, 800, 300, 400, 500, 600, 700, 200}
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Second,
+		runProcess: func(_ context.Context, executable string, _ []string, _ string, _ []string) (Sample, error) {
+			calls = append(calls, executable)
+			return Sample{DurationNS: durations[len(calls)-1], Output: "same-checksum"}, nil
+		},
+	}
+	baseline, candidate, correctnessPassed, err := measurePair(
+		context.Background(), options, "go", nil, "rust", nil,
+	)
+	if err != nil || !correctnessPassed {
+		t.Fatalf("valid paired benchmark failed: passed=%v error=%v", correctnessPassed, err)
+	}
+	expectedOrder := []string{"go", "rust", "go", "rust", "rust", "go", "go", "rust"}
+	if strings.Join(calls, ",") != strings.Join(expectedOrder, ",") {
+		t.Fatalf("paired trial order = %v; want %v", calls, expectedOrder)
+	}
+	if baseline.WarmupRuns != 1 || candidate.WarmupRuns != 1 ||
+		len(baseline.Samples) != 3 || len(candidate.Samples) != 3 {
+		t.Fatalf("paired measurement metadata is incomplete: Go=%+v Rust=%+v", baseline, candidate)
+	}
+}
+
+func TestMeasurePairStopsBeforeTimingWhenCorrectnessProbeDiffers(t *testing.T) {
+	calls := 0
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Second,
+		runProcess: func(_ context.Context, executable string, _ []string, _ string, _ []string) (Sample, error) {
+			calls++
+			output := "baseline-checksum"
+			if executable == "rust" {
+				output = "different-checksum"
+			}
+			return Sample{DurationNS: 100, Output: output}, nil
+		},
+	}
+	baseline, candidate, correctnessPassed, err := measurePair(
+		context.Background(), options, "go", nil, "rust", nil,
+	)
+	if err != nil || correctnessPassed || calls != 2 {
+		t.Fatalf("benchmark ran despite correctness mismatch: passed=%v calls=%d error=%v", correctnessPassed, calls, err)
+	}
+	if baseline.Status != "correctness_failed" || candidate.Status != "correctness_failed" ||
+		len(baseline.Samples) != 0 || len(candidate.Samples) != 0 {
+		t.Fatalf("mismatched probes retained performance evidence: Go=%+v Rust=%+v", baseline, candidate)
+	}
+	if verdict, _ := Decide("FAILED", baseline, candidate); verdict != VerdictInconclusive {
+		t.Fatalf("incorrect candidate received a performance verdict: %s", verdict)
+	}
+}
+
+func TestMeasurePairRejectsEmptyCorrectnessOutput(t *testing.T) {
+	calls := 0
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Second,
+		runProcess: func(context.Context, string, []string, string, []string) (Sample, error) {
+			calls++
+			return Sample{DurationNS: 100}, nil
+		},
+	}
+	baseline, candidate, correctnessPassed, err := measurePair(
+		context.Background(), options, "go", nil, "rust", nil,
+	)
+	if err != nil || correctnessPassed || calls != 2 ||
+		baseline.Status != "correctness_failed" || candidate.Status != "correctness_failed" ||
+		candidate.ErrorCount != 1 {
+		t.Fatalf("empty output was treated as a valid checksum: pass=%v calls=%d Go=%+v Rust=%+v error=%v",
+			correctnessPassed, calls, baseline, candidate, err)
+	}
+}
+
+func TestMeasurePairTimeoutInvalidatesBothAggregateResults(t *testing.T) {
+	calls := 0
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Nanosecond,
+		runProcess: func(_ context.Context, executable string, _ []string, _ string, _ []string) (Sample, error) {
+			calls++
+			if calls == 4 {
+				return Sample{}, context.DeadlineExceeded
+			}
+			return Sample{DurationNS: 100, Output: "same-checksum"}, nil
+		},
+	}
+	baseline, candidate, correctnessPassed, err := measurePair(
+		context.Background(), options, "go", nil, "rust", nil,
+	)
+	if err == nil || !correctnessPassed || candidate.Status != "timed_out" ||
+		baseline.Status != "incomplete" || candidate.ErrorCount != 1 {
+		t.Fatalf("timeout was not reflected in paired results: pass=%v Go=%+v Rust=%+v error=%v",
+			correctnessPassed, baseline, candidate, err)
+	}
+	if baseline.MedianNS != 0 || candidate.MedianNS != 0 {
+		t.Fatalf("partial runs produced aggregate metrics: Go=%+v Rust=%+v", baseline, candidate)
+	}
+	if verdict, _ := Decide("PASSED_FOR_CHECKSUM", baseline, candidate); verdict != VerdictInconclusive {
+		t.Fatalf("timed-out pair received a verdict: %s", verdict)
+	}
+}
+
+func TestMeasureRejectsChangedWarmupOutput(t *testing.T) {
+	calls := 0
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Second,
+		runProcess: func(context.Context, string, []string, string, []string) (Sample, error) {
+			calls++
+			return Sample{DurationNS: 100, Output: []string{"warmup", "changed"}[min(calls-1, 1)]}, nil
+		},
+	}
+	measurement, err := measure(context.Background(), options, "Rust candidate", "ignored", nil)
+	if err == nil || measurement.Status != "failed" || measurement.ErrorCount != 1 || len(measurement.Samples) != 0 {
+		t.Fatalf("output mismatch was accepted as benchmark data: measurement=%+v error=%v", measurement, err)
+	}
+}
+
+func TestMeasureRejectsEmptyCorrectnessOutput(t *testing.T) {
+	options := DemoOptions{
+		Iterations: 10, Repetitions: 3, Timeout: time.Second,
+		runProcess: func(context.Context, string, []string, string, []string) (Sample, error) {
+			return Sample{DurationNS: 100}, nil
+		},
+	}
+	measurement, err := measure(context.Background(), options, "Go baseline", "ignored", nil)
+	if err == nil || measurement.Status != "correctness_failed" ||
+		measurement.ErrorCount != 1 || measurement.WarmupRuns != 1 {
+		t.Fatalf("empty baseline correctness output was accepted: measurement=%+v error=%v", measurement, err)
+	}
+}
+
 func TestDecideRequiresCorrectnessAndReliableEvidence(t *testing.T) {
-	baseline := Measurement{
-		Status: "measured", Iterations: 100, OpsPerSec: 100,
-		Samples: []Sample{{DurationNS: 100}, {DurationNS: 101}, {DurationNS: 99}},
-	}
-	candidate := Measurement{
-		Status: "measured", Iterations: 100, OpsPerSec: 120,
-		Samples: []Sample{{DurationNS: 80}, {DurationNS: 81}, {DurationNS: 79}},
-	}
+	baseline := testMeasurement("Go baseline", []uint64{100_000_000, 101_000_000, 99_000_000}, 10)
+	candidate := testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
 	verdict, _ := Decide("NOT_RUN", baseline, candidate)
 	if verdict != VerdictInconclusive {
 		t.Fatalf("incorrectness did not invalidate verdict: %s", verdict)
@@ -139,29 +330,53 @@ func TestDecideRequiresCorrectnessAndReliableEvidence(t *testing.T) {
 	if verdict != VerdictPort {
 		t.Fatalf("expected PORT for reliable gain, got %s", verdict)
 	}
-	candidate.OpsPerSec = 80
+	candidate = testMeasurement("Rust candidate", []uint64{120_000_000, 121_000_000, 119_000_000}, 10)
 	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
 	if verdict != VerdictDontPort {
 		t.Fatalf("expected DONT_PORT for reliable regression, got %s", verdict)
 	}
-	candidate.OpsPerSec = 101
+	candidate = testMeasurement("Rust candidate", []uint64{99_000_000, 100_000_000, 101_000_000}, 10)
 	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
 	if verdict != VerdictOptimizeFirst {
 		t.Fatalf("expected OPTIMIZE_FIRST for marginal gain, got %s", verdict)
 	}
-	candidate.Samples = []Sample{{DurationNS: 20}, {DurationNS: 100}, {DurationNS: 300}}
+	candidate = testMeasurement("Rust candidate", []uint64{20_000_000, 100_000_000, 300_000_000}, 10)
 	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
 	if verdict != VerdictInconclusive {
 		t.Fatalf("noisy measurements did not produce an inconclusive verdict: %s", verdict)
 	}
 }
 
-func TestIncorrectCandidateOutputCannotPassCorrectnessGate(t *testing.T) {
-	baseline := Measurement{Samples: []Sample{{Output: "expected"}, {Output: "expected"}}}
-	incorrect := Measurement{Samples: []Sample{{Output: "wrong"}, {Output: "wrong"}}}
-	if outputsMatch(baseline, incorrect) {
-		t.Fatal("intentionally incorrect candidate passed the correctness gate")
+func TestDecideRejectsInvalidOrIncompleteMeasurements(t *testing.T) {
+	baseline := testMeasurement("Go baseline", []uint64{100_000_000, 101_000_000, 99_000_000}, 10)
+	candidate := testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
+	candidate.Samples = candidate.Samples[:2]
+	if verdict, _ := Decide("PASSED_FOR_CHECKSUM", baseline, candidate); verdict != VerdictInconclusive {
+		t.Fatalf("incomplete trial data received a verdict: %s", verdict)
 	}
+	candidate = testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
+	candidate.ErrorCount = 1
+	if verdict, _ := Decide("PASSED_FOR_CHECKSUM", baseline, candidate); verdict != VerdictInconclusive {
+		t.Fatalf("measurement errors were accepted: %s", verdict)
+	}
+	candidate = testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
+	candidate.P95NS++
+	if verdict, _ := Decide("PASSED_FOR_CHECKSUM", baseline, candidate); verdict != VerdictInconclusive {
+		t.Fatalf("inconsistent summary values were accepted: %s", verdict)
+	}
+	candidate = testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
+	candidate.CorrectnessOutput = "different"
+	for i := range candidate.Samples {
+		candidate.Samples[i].Output = "different"
+	}
+	if verdict, _ := Decide("PASSED_FOR_CHECKSUM", baseline, candidate); verdict != VerdictInconclusive {
+		t.Fatalf("different recorded correctness outputs were accepted: %s", verdict)
+	}
+}
+
+func TestIncorrectCandidateOutputCannotPassCorrectnessGate(t *testing.T) {
+	baseline := testMeasurement("Go baseline", []uint64{100_000_000, 101_000_000, 99_000_000}, 10)
+	incorrect := testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
 	verdict, _ := Decide("FAILED", baseline, incorrect)
 	if verdict != VerdictInconclusive {
 		t.Fatalf("incorrect candidate received a performance verdict: %s", verdict)
@@ -235,6 +450,17 @@ func TestReadReportValidatesSchema(t *testing.T) {
 	if _, err := ReadReport(path); err != nil {
 		t.Fatalf("valid report rejected: %v", err)
 	}
+	legacy := `{"schema_version":"1.0","project":"sample","component":"operation","verdict":"INCONCLUSIVE","measurements":[{"name":"Go baseline","status":"measured","repetitions":3,"iterations":10}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loadedLegacy, err := ReadReport(path)
+	if err != nil {
+		t.Fatalf("legacy report rejected: %v", err)
+	}
+	if loadedLegacy.Measurements[0].WarmupRuns != 1 {
+		t.Fatalf("legacy warm-up metadata was not migrated: %+v", loadedLegacy.Measurements[0])
+	}
 	report.SchemaVersion = "999"
 	data, _ = json.Marshal(report)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -269,18 +495,140 @@ func TestCompareReportsRefusesDifferentWorkloads(t *testing.T) {
 }
 
 func TestCompareReportsRefusesDifferentEnvironments(t *testing.T) {
-	first := Report{Project: "a", Component: "same", Workload: "same", Iterations: 5, Environment: map[string]string{"os": "windows"}}
-	second := Report{Project: "b", Component: "same", Workload: "same", Iterations: 5, Environment: map[string]string{"os": "linux"}}
+	first := Report{Project: "a", Component: "same", Workload: "same", Iterations: 5, Correctness: "PASSED_FOR_CHECKSUM", Environment: map[string]string{"os": "windows"}}
+	second := Report{Project: "b", Component: "same", Workload: "same", Iterations: 5, Correctness: "PASSED_FOR_CHECKSUM", Environment: map[string]string{"os": "linux"}}
 	if !strings.Contains(CompareReports(first, second), `environment metadata differs for "os"`) {
 		t.Fatal("different environments were treated as comparable")
+	}
+}
+
+func TestCompareReportsRefusesInconclusiveEvidence(t *testing.T) {
+	report := Report{
+		Project: "sample", Component: "operation", Workload: "fixed", Iterations: 10,
+		Correctness: "PASSED_FOR_CHECKSUM", Verdict: VerdictInconclusive,
+	}
+	if !strings.Contains(CompareReports(report, report), "inconclusive or invalid measurements") {
+		t.Fatal("inconclusive reports were compared as valid evidence")
+	}
+}
+
+func TestReadReportNormalizesVerdictWhenRawMeasurementsAreInvalid(t *testing.T) {
+	baseline := testMeasurement("Go baseline", []uint64{100_000_000, 101_000_000, 99_000_000}, 10)
+	candidate := testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
+	candidate.P95NS++
+	delta := 25.0
+	report := Report{
+		SchemaVersion: SchemaVersion, Project: "sample", Component: "operation",
+		Workload: "fixed", Iterations: 10, Correctness: "PASSED_FOR_CHECKSUM",
+		Verdict: VerdictPort, ThroughputDeltaPercent: &delta,
+		Measurements: []Measurement{baseline, candidate},
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ReadReport(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Verdict != VerdictInconclusive || loaded.ThroughputDeltaPercent != nil {
+		t.Fatalf("invalid raw data retained a performance verdict: %+v", loaded)
+	}
+}
+
+func TestReadReportRequiresMatchingRecordedCorrectnessOutputs(t *testing.T) {
+	baseline := testMeasurement("Go baseline", []uint64{100_000_000, 101_000_000, 99_000_000}, 10)
+	candidate := testMeasurement("Rust candidate", []uint64{80_000_000, 81_000_000, 79_000_000}, 10)
+	candidate.CorrectnessOutput = "different"
+	for i := range candidate.Samples {
+		candidate.Samples[i].Output = "different"
+	}
+	report := Report{
+		SchemaVersion: SchemaVersion, Project: "sample", Component: "operation",
+		Workload: "fixed", Iterations: 10, Correctness: "PASSED_FOR_CHECKSUM",
+		Verdict: VerdictPort, Measurements: []Measurement{baseline, candidate},
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ReadReport(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Verdict != VerdictInconclusive || loaded.ThroughputDeltaPercent != nil {
+		t.Fatalf("mismatched output evidence retained a verdict: %+v", loaded)
 	}
 }
 
 func TestRenderMarkdownMarksMissingMetricsAsUnavailable(t *testing.T) {
 	report := Report{SchemaVersion: SchemaVersion, Measurements: []Measurement{{Name: "Rust candidate", Status: "unavailable"}}}
 	rendered := RenderMarkdown(report)
-	if !strings.Contains(rendered, "| Rust candidate | unavailable | n/a | n/a | n/a | n/a | n/a | n/a |") {
+	if !strings.Contains(rendered, "| Rust candidate | unavailable | 0 | 0 | 0 | n/a | n/a | n/a | n/a | n/a |") {
 		t.Fatalf("missing metrics were rendered as numeric values: %s", rendered)
+	}
+}
+
+func TestRenderMarkdownDoesNotDisplayInvalidAggregates(t *testing.T) {
+	measurement := testMeasurement("Go baseline", []uint64{100, 200, 300}, 10)
+	measurement.P95NS++
+	rendered := RenderMarkdown(Report{
+		Correctness: "PASSED_FOR_CHECKSUM",
+		Verdict:     VerdictPort,
+		Measurements: []Measurement{
+			measurement,
+		},
+	})
+	if !strings.Contains(rendered, "| Go baseline | invalid | 3 | 1 | 0 | n/a | n/a | n/a | n/a | n/a |") ||
+		!strings.Contains(rendered, "Verdict:** `INCONCLUSIVE`") {
+		t.Fatalf("invalid aggregate values were rendered as measured: %s", rendered)
+	}
+}
+
+func TestWriteReportPreservesRawMeasurementsAndRendersComparison(t *testing.T) {
+	dir := t.TempDir()
+	report := Report{
+		SchemaVersion: SchemaVersion,
+		GeneratedAt:   time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		Project:       "sample", Component: "operation", Workload: "fixed input",
+		Iterations: 10, Correctness: "PASSED_FOR_CHECKSUM", Verdict: VerdictInconclusive,
+		Reason: "variability exceeded threshold", Environment: map[string]string{"os": "test-os"},
+		Measurements: []Measurement{
+			testMeasurement("Go baseline", []uint64{100, 200, 300}, 10),
+		},
+		Reproduction: "rustrush demo --repetitions 3",
+	}
+	if err := WriteReport(dir, report); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ReadReport(filepath.Join(dir, "latest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Measurements) != 1 || len(loaded.Measurements[0].Samples) != 3 ||
+		loaded.Measurements[0].Samples[1].DurationNS != 200 {
+		t.Fatalf("raw samples were not preserved in JSON: %+v", loaded.Measurements)
+	}
+	markdown, err := os.ReadFile(filepath.Join(dir, "latest.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"not estimates", "not per-request latency", "Warm-ups", "Errors",
+		"**Go baseline raw process samples (ns):** [100 200 300]", "Machine and runtime metadata",
+		"variability exceeded threshold",
+	} {
+		if !strings.Contains(string(markdown), expected) {
+			t.Errorf("Markdown report is missing %q:\n%s", expected, markdown)
+		}
 	}
 }
 
@@ -363,4 +711,21 @@ func TestCalculateROIRejectsInvalidInputsAndOverflow(t *testing.T) {
 
 func floatPointer(value float64) *float64 {
 	return &value
+}
+
+func testMeasurement(name string, durations []uint64, iterations uint64) Measurement {
+	samples := make([]Sample, len(durations))
+	for i, duration := range durations {
+		samples[i] = Sample{DurationNS: duration, Output: "same"}
+	}
+	summary, err := Summarize(samples, iterations)
+	if err != nil {
+		panic(err)
+	}
+	return Measurement{
+		Name: name, Status: "measured", Repetitions: len(samples), WarmupRuns: 1,
+		CorrectnessOutput: "same", Iterations: iterations, Samples: samples, MedianNS: summary.MedianNS,
+		P50NS: summary.P50NS, P95NS: summary.P95NS, P99NS: summary.P99NS,
+		OpsPerSec: summary.OpsPerSec, CoefficientOfVariation: summary.CoefficientOfVariation,
+	}
 }

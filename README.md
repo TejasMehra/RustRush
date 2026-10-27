@@ -31,7 +31,7 @@ The demo writes `results/latest.json` and `results/latest.md`. To adjust its wor
 go run ./cmd/rustrush demo --iterations 5000000 --repetitions 7 --timeout 30s
 ```
 
-If `rustc` is installed, RustRush compiles the checked-in candidate into a temporary directory, verifies its checksum against the Go baseline, performs one warm-up and the requested trials, then calculates statistics from the raw samples. Otherwise it still measures the baseline and writes a report marking the candidate unavailable and the verdict inconclusive.
+If `rustc` is installed, RustRush compiles the checked-in candidate into a temporary directory and runs untimed correctness probes first. Timed runs start only when both outputs match. It then performs one warm-up per implementation and the requested number of paired repetitions, alternating which implementation runs first. Otherwise it still measures the Go baseline and writes a report marking the candidate unavailable and the verdict inconclusive.
 
 Other useful commands:
 
@@ -50,22 +50,23 @@ go run ./cmd/rustrush compare results/latest.json results/another-run.json
 - Runs one deterministic integer-mixing CPU workload implemented in Go and Rust.
 - Runs a fixture-based JSON integer-array transformation implemented in Go and Rust; the Rust parser is deliberately limited to the built-in fixture shape.
 - Runs a CSV-backed filter-and-aggregate mock implemented in Go and Rust; it is explicitly not a real database benchmark.
-- Gates performance interpretation on a matching output checksum.
-- Records raw process timings, nearest-rank p50/p95/p99, median throughput, environment metadata, assumptions, and limitations in a versioned JSON report.
+- Requires matching correctness probes before timing; output changes during trials invalidate the comparison.
+- Records raw process timings, nearest-rank p50/p95/p99 process latency, median throughput, process failure counts, and OS/runtime metadata in versioned JSON plus a Markdown comparison report.
+- Reports `INCONCLUSIVE` when measurements are missing, malformed, failed, or too variable. Markdown labels observed benchmark results as measured, not estimated.
 - Renders and compares saved reports locally.
 - Calculates optional migration ROI from explicit user assumptions; it does not infer CPU costs or engineering effort from benchmark timings.
 
 ## Interpreting results
 
-The benchmark is intentionally narrow. Timing includes process startup as well as workload execution, so small iteration counts are especially sensitive to launch overhead. The workload is synthetic, and matching checksums do not prove complete semantic equivalence. A measured `PORT` result is a reason to investigate the tested operation further, not evidence that an entire backend should be rewritten.
+The benchmark is intentionally narrow. Reported p50/p95/p99 values describe whole-process wall-clock durations across repetitions; they are not per-request latency distributions. Timing includes process startup as well as workload execution, so small iteration counts are especially sensitive to launch overhead. The workload is synthetic, and matching checksums do not prove complete semantic equivalence. A measured `PORT` result is a reason to investigate the tested operation further, not evidence that an entire backend should be rewritten.
 
-Static analysis results are hypotheses, not profiled hotspots. Database and network findings explicitly recommend measuring I/O before considering a language migration. The verdict requires at least three measured trials, a checksum match, and no more than 10% run-to-run coefficient of variation. A throughput difference within 10% yields `OPTIMIZE_FIRST`; a noisy or invalid experiment yields `INCONCLUSIVE`. RustRush does not currently collect CPU utilization, memory, allocation counts, or request latency distributions.
+Static analysis results are hypotheses, not profiled hotspots. Database and network findings explicitly recommend measuring I/O before considering a language migration. The verdict requires at least three matching paired trials, a passed correctness gate, valid aggregates, and no more than 10% run-to-run coefficient of variation. A throughput difference within 10% yields `OPTIMIZE_FIRST`; a noisy or invalid experiment yields `INCONCLUSIVE`. RustRush does not currently collect CPU utilization, memory, allocation counts, per-request latency distributions, or request-level error rates; its error counts describe failed benchmark process attempts.
 
 ## Security and privacy
 
 Analysis is local and does not execute scanned project code. It skips common dependency/build directories and credential-like files, limits source reads, and emits relative source locations rather than absolute paths. The built-in demo only compiles and runs the checked-in Rust example, uses a temporary build directory, avoids a shell, and applies a timeout. Temporary compilation is not a general-purpose sandbox; do not treat it as isolation for arbitrary generated or third-party code.
 
-Reports contain no source contents or environment-variable values. The demo records OS, architecture, Go runtime, CPU count, and Rust compiler version when available. It makes no uploads or remote model calls.
+Reports contain no source contents or environment-variable values. The demo records OS, architecture, Go runtime/compiler, CPU count, Go `GOMAXPROCS`, and Rust compiler version when available. It makes no uploads or remote model calls.
 
 ## Current limitations
 

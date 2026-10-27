@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	SchemaVersion      = "1.0"
+	SchemaVersion      = "1.1"
 	DefaultIterations  = uint64(2_000_000)
 	DefaultRepetitions = 5
 )
@@ -58,6 +58,9 @@ type Measurement struct {
 	Name                   string   `json:"name"`
 	Status                 string   `json:"status"`
 	Repetitions            int      `json:"repetitions"`
+	WarmupRuns             int      `json:"warmup_runs"`
+	ErrorCount             int      `json:"error_count"`
+	CorrectnessOutput      string   `json:"correctness_output,omitempty"`
 	Iterations             uint64   `json:"iterations"`
 	Samples                []Sample `json:"samples"`
 	MedianNS               uint64   `json:"median_ns,omitempty"`
@@ -130,21 +133,63 @@ func ReadReport(path string) (Report, error) {
 		}
 		return report, fmt.Errorf("read end of report: %w", err)
 	}
-	if report.SchemaVersion != SchemaVersion {
+	if report.SchemaVersion != "1.0" && report.SchemaVersion != SchemaVersion {
 		return report, fmt.Errorf("unsupported report schema %q", report.SchemaVersion)
 	}
 	if report.Project == "" || report.Component == "" {
 		return report, errors.New("report is missing required project or component fields")
+	}
+	if report.SchemaVersion == "1.0" {
+		for i := range report.Measurements {
+			switch report.Measurements[i].Status {
+			case "measured":
+				report.Measurements[i].WarmupRuns = 1
+				if len(report.Measurements[i].Samples) > 0 {
+					report.Measurements[i].CorrectnessOutput = report.Measurements[i].Samples[0].Output
+				}
+			case "failed", "build_failed":
+				report.Measurements[i].ErrorCount = 1
+			}
+		}
 	}
 	switch report.Verdict {
 	case VerdictPort, VerdictOptimizeFirst, VerdictDontPort, VerdictInconclusive:
 	default:
 		return report, fmt.Errorf("report has invalid verdict %q", report.Verdict)
 	}
+	normalizeReportEvidence(&report)
 	return report, nil
 }
 
+func normalizeReportEvidence(report *Report) {
+	if report.Verdict == VerdictInconclusive {
+		report.ThroughputDeltaOpsPerSec = nil
+		report.ThroughputDeltaPercent = nil
+		return
+	}
+	var baseline, candidate Measurement
+	for _, measurement := range report.Measurements {
+		switch measurement.Name {
+		case "Go baseline":
+			baseline = measurement
+		case "Rust candidate":
+			candidate = measurement
+		}
+	}
+	report.Verdict, report.Reason = Decide(report.Correctness, baseline, candidate)
+	if report.Verdict == VerdictInconclusive {
+		report.ThroughputDeltaOpsPerSec = nil
+		report.ThroughputDeltaPercent = nil
+		return
+	}
+	delta := candidate.OpsPerSec - baseline.OpsPerSec
+	percent := delta / baseline.OpsPerSec * 100
+	report.ThroughputDeltaOpsPerSec = &delta
+	report.ThroughputDeltaPercent = &percent
+}
+
 func WriteReport(directory string, report Report) error {
+	normalizeReportEvidence(&report)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return fmt.Errorf("create report directory: %w", err)
 	}
@@ -169,21 +214,37 @@ func WriteReport(directory string, report Report) error {
 }
 
 func RenderMarkdown(report Report) string {
-	out := fmt.Sprintf("# RustRush benchmark report\n\n- **Schema:** %s\n- **Generated:** %s\n- **Project:** %s\n- **Component:** %s\n- **Verdict:** `%s`\n- **Correctness:** %s\n\n## Workload\n\n%s\n\nIterations per process: %d. Reproduction: `%s`.\n\n## Measurements\n\n| Implementation | Status | Trials | Median/p50 (ms) | p95 (ms) | p99 (ms) | Ops/sec | CV |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",
+	normalizeReportEvidence(&report)
+	out := fmt.Sprintf("# RustRush benchmark report\n\n- **Schema:** %s\n- **Generated:** %s\n- **Project:** %s\n- **Component:** %s\n- **Verdict:** `%s`\n- **Correctness gate:** %s\n\n## Workload\n\n%s\n\nIterations per process: %d. Reproduction: `%s`.\n\nAll durations and throughput below are measured observations, not estimates. Latency percentiles are process wall-clock durations (startup, argument parsing, workload, and output capture), not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors.\n\n## Measurements\n\n| Implementation | Status | Trials | Warm-ups | Errors | Median/p50 (ms) | p95 (ms) | p99 (ms) | Ops/sec | CV |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
 		report.SchemaVersion, report.GeneratedAt.UTC().Format(time.RFC3339), report.Project, report.Component, report.Verdict, report.Correctness, report.Workload, report.Iterations, report.Reproduction)
 	for _, measurement := range report.Measurements {
-		if measurement.Status != "measured" {
-			out += fmt.Sprintf("| %s | %s | n/a | n/a | n/a | n/a | n/a | n/a |\n", measurement.Name, measurement.Status)
+		if measurement.Status != "measured" || !validMeasurement(measurement) {
+			status := measurement.Status
+			if status == "measured" {
+				status = "invalid"
+			}
+			out += fmt.Sprintf("| %s | %s | %d | %d | %d | n/a | n/a | n/a | n/a | n/a |\n",
+				measurement.Name, status, len(measurement.Samples), measurement.WarmupRuns, measurement.ErrorCount)
+			if len(measurement.Samples) > 0 {
+				out += fmt.Sprintf("\n**%s partial raw process samples (ns):** %v\n", measurement.Name, sampleDurations(measurement.Samples))
+			}
 			continue
 		}
-		out += fmt.Sprintf("| %s | %s | %d | %.3f | %.3f | %.3f | %.2f | %.3f |\n",
-			measurement.Name, measurement.Status, measurement.Repetitions,
+		out += fmt.Sprintf("| %s | %s | %d | %d | %d | %.3f | %.3f | %.3f | %.2f | %.3f |\n",
+			measurement.Name, measurement.Status, measurement.Repetitions, measurement.WarmupRuns, measurement.ErrorCount,
 			float64(measurement.MedianNS)/1e6, float64(measurement.P95NS)/1e6,
 			float64(measurement.P99NS)/1e6, measurement.OpsPerSec, measurement.CoefficientOfVariation)
+		out += fmt.Sprintf("\n**%s raw process samples (ns):** %v\n", measurement.Name, sampleDurations(measurement.Samples))
 	}
 	if report.ThroughputDeltaPercent != nil && report.ThroughputDeltaOpsPerSec != nil {
-		out += fmt.Sprintf("\nThroughput delta (Rust candidate vs Go baseline): %+.2f ops/s (%+.2f%%).\n",
+		out += fmt.Sprintf("\n**Measured throughput delta** (Rust candidate vs Go baseline): %+.2f ops/s (%+.2f%%).\n",
 			*report.ThroughputDeltaOpsPerSec, *report.ThroughputDeltaPercent)
+	}
+	if len(report.Environment) > 0 {
+		out += "\n## Machine and runtime metadata\n\n| Property | Value |\n|---|---|\n"
+		for _, key := range sortedKeys(report.Environment) {
+			out += fmt.Sprintf("| %s | %s |\n", key, report.Environment[key])
+		}
 	}
 	out += "\n## Rationale\n\n" + report.Reason + "\n"
 	if len(report.Limitations) > 0 {
@@ -195,21 +256,44 @@ func RenderMarkdown(report Report) string {
 	return out
 }
 
+func sampleDurations(samples []Sample) []uint64 {
+	durations := make([]uint64, len(samples))
+	for i, sample := range samples {
+		durations[i] = sample.DurationNS
+	}
+	return durations
+}
+
+func sortedKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func CompareReports(first, second Report) string {
 	out := fmt.Sprintf("Report A: %s — %s\nReport B: %s — %s\n", first.Project, first.Component, second.Project, second.Component)
-	if first.Component != second.Component || first.Workload != second.Workload || first.Iterations != second.Iterations {
+	if first.Component != second.Component || first.Workload != second.Workload ||
+		first.Iterations != second.Iterations {
 		return out + "Comparison unavailable: component or workload definitions differ.\n"
 	}
-	if first.Correctness == "FAILED" || second.Correctness == "FAILED" {
-		return out + "Comparison unavailable: a report failed its correctness check.\n"
+	if first.Correctness != "PASSED_FOR_CHECKSUM" || second.Correctness != "PASSED_FOR_CHECKSUM" {
+		return out + "Comparison unavailable: both reports must pass the correctness check.\n"
 	}
-	for _, key := range []string{"os", "architecture", "go_runtime", "cpu_count"} {
+	if first.Verdict == VerdictInconclusive || second.Verdict == VerdictInconclusive {
+		return out + "Comparison unavailable: a report has inconclusive or invalid measurements.\n"
+	}
+	for _, key := range []string{"os", "architecture", "go_runtime", "go_compiler", "cpu_count", "go_max_procs"} {
 		if first.Environment[key] == "" || second.Environment[key] == "" || first.Environment[key] != second.Environment[key] {
 			return out + fmt.Sprintf("Comparison unavailable: environment metadata differs for %q.\n", key)
 		}
 	}
-	if first.Environment["rustc"] != second.Environment["rustc"] {
-		return out + "Comparison unavailable: Rust compiler metadata differs.\n"
+	for _, key := range []string{"rustc", "rustc_flags"} {
+		if first.Environment[key] != second.Environment[key] {
+			return out + "Comparison unavailable: Rust compiler metadata differs.\n"
+		}
 	}
 	secondByName := make(map[string]Measurement, len(second.Measurements))
 	for _, measurement := range second.Measurements {
@@ -218,9 +302,9 @@ func CompareReports(first, second Report) string {
 	comparisons := 0
 	for _, aMeasurement := range first.Measurements {
 		bMeasurement, ok := secondByName[aMeasurement.Name]
-		if !ok || aMeasurement.Status != "measured" || bMeasurement.Status != "measured" ||
-			aMeasurement.MedianNS == 0 || bMeasurement.MedianNS == 0 ||
-			aMeasurement.OpsPerSec <= 0 || bMeasurement.OpsPerSec <= 0 {
+		if !ok || !validMeasurement(aMeasurement) || !validMeasurement(bMeasurement) ||
+			aMeasurement.Iterations != bMeasurement.Iterations ||
+			aMeasurement.Repetitions != bMeasurement.Repetitions {
 			continue
 		}
 		change := (bMeasurement.OpsPerSec - aMeasurement.OpsPerSec) / aMeasurement.OpsPerSec * 100
@@ -262,11 +346,14 @@ func Decide(correctness string, baseline, candidate Measurement) (Verdict, strin
 	if correctness != "PASSED_FOR_CHECKSUM" {
 		return VerdictInconclusive, "Correctness was not established; performance evidence is invalid."
 	}
-	if baseline.Status != "measured" || candidate.Status != "measured" ||
-		baseline.Iterations == 0 || baseline.Iterations != candidate.Iterations ||
-		len(baseline.Samples) < 3 || len(candidate.Samples) < 3 ||
-		baseline.OpsPerSec <= 0 || candidate.OpsPerSec <= 0 {
+	if !validMeasurement(baseline) || !validMeasurement(candidate) ||
+		baseline.Iterations != candidate.Iterations ||
+		baseline.Repetitions != candidate.Repetitions ||
+		baseline.WarmupRuns != candidate.WarmupRuns {
 		return VerdictInconclusive, "Valid repeated measurements for the same workload are unavailable."
+	}
+	if baseline.CorrectnessOutput != candidate.CorrectnessOutput {
+		return VerdictInconclusive, "Recorded correctness outputs do not match; performance evidence is invalid."
 	}
 	if coefficientOfVariation(baseline.Samples) > 0.10 || coefficientOfVariation(candidate.Samples) > 0.10 {
 		return VerdictInconclusive, "Run-to-run variability exceeded 10%; repeat under quieter conditions before deciding."
@@ -280,6 +367,33 @@ func Decide(correctness string, baseline, candidate Measurement) (Verdict, strin
 	default:
 		return VerdictOptimizeFirst, fmt.Sprintf("The measured throughput difference was %.1f%%, below the 10%% investigation threshold. Optimize the current implementation and remeasure before considering a migration.", gain)
 	}
+}
+
+func validMeasurement(measurement Measurement) bool {
+	if measurement.Status != "measured" || measurement.Iterations == 0 ||
+		measurement.Repetitions < 3 || len(measurement.Samples) != measurement.Repetitions ||
+		measurement.WarmupRuns != 1 || measurement.ErrorCount != 0 || measurement.MedianNS == 0 ||
+		measurement.CorrectnessOutput == "" ||
+		measurement.P50NS == 0 || measurement.P95NS == 0 || measurement.P99NS == 0 ||
+		measurement.OpsPerSec <= 0 || math.IsNaN(measurement.OpsPerSec) ||
+		math.IsInf(measurement.OpsPerSec, 0) || measurement.CoefficientOfVariation < 0 ||
+		math.IsNaN(measurement.CoefficientOfVariation) ||
+		math.IsInf(measurement.CoefficientOfVariation, 0) {
+		return false
+	}
+	for _, sample := range measurement.Samples {
+		if sample.DurationNS == 0 || sample.Output != measurement.CorrectnessOutput {
+			return false
+		}
+	}
+	summary, err := Summarize(measurement.Samples, measurement.Iterations)
+	return err == nil &&
+		measurement.MedianNS == summary.MedianNS &&
+		measurement.P50NS == summary.P50NS &&
+		measurement.P95NS == summary.P95NS &&
+		measurement.P99NS == summary.P99NS &&
+		measurement.OpsPerSec == summary.OpsPerSec &&
+		measurement.CoefficientOfVariation == summary.CoefficientOfVariation
 }
 
 func coefficientOfVariation(samples []Sample) float64 {
@@ -315,6 +429,8 @@ func environment() map[string]string {
 		"os":           runtime.GOOS,
 		"architecture": runtime.GOARCH,
 		"go_runtime":   runtime.Version(),
+		"go_compiler":  runtime.Compiler,
 		"cpu_count":    fmt.Sprint(runtime.NumCPU()),
+		"go_max_procs": fmt.Sprint(runtime.GOMAXPROCS(0)),
 	}
 }

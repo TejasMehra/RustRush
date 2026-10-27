@@ -10,6 +10,7 @@ This status describes the checked-in implementation; items marked planned are no
 - [x] Deterministic Go baseline and corresponding Rust integer-mixing candidate source.
 - [x] Shared JSON integer-array fixture, Go transformation baseline, and dependency-free Rust candidate for the fixture shape.
 - [x] Shared CSV filter-and-aggregate mock with Go baseline, Rust candidate source, and explicit non-database limitations.
+- [x] Rust-enabled Ubuntu CI compiles and checksum-verifies all three candidate examples; this does not claim a performance win.
 - [x] Checksum correctness gate, warm-up, repeated process timings, raw JSON samples, and honest missing-compiler reporting.
 - [x] Versioned JSON plus local Markdown reports and workload-compatible report comparison.
 - [x] Optional ROI calculator with explicit user assumptions, missing-input reporting, and break-even estimates.
@@ -20,7 +21,6 @@ This status describes the checked-in implementation; items marked planned are no
 
 ## Planned
 
-- [ ] Compile and checksum-verify the Rust candidate end-to-end on a machine with a supported Rust toolchain; this environment has no Rust compiler or Windows C++ linker.
 - [ ] Add and validate a real local database-backed example with shared fixtures and correctness tests.
 - [ ] Add isolated candidate templates and application-specific benchmark adapters.
 - [ ] Add profiling adapters and richer evidence-based analysis.

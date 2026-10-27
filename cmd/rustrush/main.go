@@ -40,6 +40,10 @@ func run(args []string) error {
 		return compare(args[1:])
 	case "__workload":
 		return workload(args[1:])
+	case "__json-workload":
+		return jsonWorkload(args[1:])
+	case "__database-fixture":
+		return databaseFixture(args[1:])
 	default:
 		printUsage(os.Stderr)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -52,14 +56,14 @@ func printUsage(w *os.File) {
 Usage:
   rustrush doctor
   rustrush analyze [path]
-  rustrush demo [--iterations N] [--repetitions N] [--out DIR]
+  rustrush demo [--workload cpu|json|database-fixture] [--iterations N] [--repetitions N] [--out DIR]
   rustrush report <report.json>
   rustrush compare <report-a.json> <report-b.json>
 
 Commands:
   doctor    Check local toolchain availability
   analyze   Inspect source files without executing them
-  demo      Run the built-in CPU workload and write JSON/Markdown reports
+  demo      Run a built-in CPU, JSON, or database-fixture workload
   report    Render a saved JSON report as Markdown
   compare   Compare measured throughput from two saved reports
 
@@ -119,6 +123,7 @@ func analyze(args []string) error {
 func demo(args []string) error {
 	flags := flag.NewFlagSet("demo", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
+	workloadName := flags.String("workload", "cpu", "built-in workload: cpu, json, or database-fixture")
 	iterations := flags.Uint64("iterations", rustrush.DefaultIterations, "workload iterations per process")
 	repetitions := flags.Int("repetitions", rustrush.DefaultRepetitions, "measurement trials per implementation")
 	outDir := flags.String("out", "results", "directory for generated reports")
@@ -132,11 +137,15 @@ func demo(args []string) error {
 	if *iterations == 0 || *repetitions < 3 || *repetitions > 100 {
 		return errors.New("iterations must be positive and repetitions must be between 3 and 100")
 	}
+	if *workloadName != "cpu" && *workloadName != "json" && *workloadName != "database-fixture" {
+		return fmt.Errorf("unsupported workload %q; choose cpu, json, or database-fixture", *workloadName)
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate RustRush executable: %w", err)
 	}
 	report, err := rustrush.RunDemo(context.Background(), rustrush.DemoOptions{
+		Workload:    *workloadName,
 		Iterations:  *iterations,
 		Repetitions: *repetitions,
 		Timeout:     *timeout,
@@ -150,7 +159,8 @@ func demo(args []string) error {
 		return err
 	}
 	fmt.Print(rustrush.RenderMarkdown(report))
-	fmt.Printf("\nReports written to %s\\latest.json and %s\\latest.md\n", *outDir, *outDir)
+	fmt.Printf("\nReports written to %s and %s\n",
+		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"))
 	if report.Verdict == rustrush.VerdictInconclusive {
 		fmt.Println("The comparison is inconclusive; see limitations in the report.")
 	}
@@ -196,5 +206,43 @@ func workload(args []string) error {
 		return errors.New("iterations must be positive")
 	}
 	fmt.Println(strconv.FormatUint(rustrush.RunWorkload(*iterations), 10))
+	return nil
+}
+
+func jsonWorkload(args []string) error {
+	flags := flag.NewFlagSet("__json-workload", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	fixture := flags.String("fixture", "", "path to the JSON fixture")
+	iterations := flags.Uint64("iterations", 0, "number of JSON transformations")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *fixture == "" || *iterations == 0 {
+		return errors.New("fixture path and positive iterations are required")
+	}
+	output, err := rustrush.RunJSONWorkload(*fixture, *iterations)
+	if err != nil {
+		return err
+	}
+	fmt.Println(output)
+	return nil
+}
+
+func databaseFixture(args []string) error {
+	flags := flag.NewFlagSet("__database-fixture", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	fixture := flags.String("fixture", "", "path to the local CSV fixture")
+	iterations := flags.Uint64("iterations", 0, "number of filter-and-aggregate iterations")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *fixture == "" || *iterations == 0 {
+		return errors.New("fixture path and positive iterations are required")
+	}
+	output, err := rustrush.RunDatabaseFixture(*fixture, *iterations)
+	if err != nil {
+		return err
+	}
+	fmt.Println(output)
 	return nil
 }

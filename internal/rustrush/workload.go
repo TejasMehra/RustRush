@@ -15,6 +15,7 @@ import (
 )
 
 type DemoOptions struct {
+	Workload    string
 	Iterations  uint64
 	Repetitions int
 	Timeout     time.Duration
@@ -40,12 +41,49 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	if options.Timeout <= 0 {
 		return Report{}, errors.New("timeout must be positive")
 	}
+	if options.Workload == "" {
+		options.Workload = "cpu"
+	}
+	sourceRoot, err := filepath.Abs(options.SourceRoot)
+	if err != nil {
+		return Report{}, fmt.Errorf("resolve source root: %w", err)
+	}
+	options.SourceRoot = sourceRoot
+
+	var (
+		component      = "deterministic integer-mixing loop"
+		workloadText   = "CPU-bound fixed-count uint64 recurrence; both executables receive the same iteration count and emit a checksum"
+		baselinePrefix = []string{"__workload"}
+		candidateDir   = "cpu-heavy"
+		candidateArgs  []string
+	)
+	switch options.Workload {
+	case "cpu":
+	case "json":
+		component = "JSON integer-array transform"
+		workloadText = "Repeatedly decode the shared fixture, double each signed integer in its values array, and encode the result"
+		fixture := filepath.Join(sourceRoot, "examples", "json-transform", "fixture.json")
+		baselinePrefix = []string{"__json-workload", "--fixture", fixture}
+		candidateDir = "json-transform"
+		candidateArgs = []string{"--fixture", fixture}
+	case "database-fixture":
+		component = "mock database filter-and-aggregate"
+		workloadText = "Repeatedly parse the shared CSV fixture and sum amounts for active rows; this is a file fixture, not a database"
+		fixture := filepath.Join(sourceRoot, "examples", "database-fixture", "records.csv")
+		baselinePrefix = []string{"__database-fixture", "--fixture", fixture}
+		candidateDir = "database-fixture"
+		candidateArgs = []string{"--fixture", fixture}
+	default:
+		return Report{}, fmt.Errorf("unsupported demo workload %q; choose cpu, json, or database-fixture", options.Workload)
+	}
+	reproduction := fmt.Sprintf("go run ./cmd/rustrush demo --workload %s --iterations %d --repetitions %d",
+		options.Workload, options.Iterations, options.Repetitions)
 	report := Report{
 		SchemaVersion: SchemaVersion,
 		GeneratedAt:   time.Now().UTC(),
 		Project:       "RustRush",
-		Component:     "deterministic integer-mixing loop",
-		Workload:      "CPU-bound fixed-count uint64 recurrence; both executables receive the same iteration count and emit a checksum",
+		Component:     component,
+		Workload:      workloadText,
 		Iterations:    options.Iterations,
 		Correctness:   "NOT_RUN",
 		Verdict:       VerdictInconclusive,
@@ -54,10 +92,16 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 			"CPU utilization, memory, allocation counts, and request-level latency are not measured.",
 			"CPU model and background system load are not captured.",
 		},
-		Reproduction: fmt.Sprintf("go run ./cmd/rustrush demo --iterations %d --repetitions %d", options.Iterations, options.Repetitions),
+		Reproduction: reproduction,
 		Assumptions:  map[string]string{"timing_scope": "process startup plus workload execution", "warmup_runs": "1 per implementation"},
 	}
-	goMeasurement, err := measure(ctx, options, "Go baseline", options.Executable, []string{"__workload"})
+	if options.Workload == "json" {
+		report.Limitations = append(report.Limitations, "The Rust JSON parser supports only the built-in integer-array fixture shape.")
+	}
+	if options.Workload == "database-fixture" {
+		report.Limitations = append(report.Limitations, "This workload is a CSV mock and does not model a database, query planner, connection, or network.")
+	}
+	goMeasurement, err := measure(ctx, options, "Go baseline", options.Executable, baselinePrefix)
 	if err != nil {
 		return Report{}, err
 	}
@@ -75,7 +119,7 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	}
 	versionCtx, cancelVersion := context.WithTimeout(ctx, 3*time.Second)
 	versionCommand := exec.CommandContext(versionCtx, rustc, "--version")
-	versionCommand.Env = minimalEnvironment()
+	versionCommand.Env = compilerEnvironment()
 	version, versionErr := versionCommand.Output()
 	cancelVersion()
 	if versionErr == nil {
@@ -84,10 +128,6 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 		report.Limitations = append(report.Limitations, "The Rust compiler version could not be recorded.")
 	}
 
-	sourceRoot, err := filepath.Abs(options.SourceRoot)
-	if err != nil {
-		return Report{}, fmt.Errorf("resolve source root: %w", err)
-	}
 	tempDir, err := os.MkdirTemp("", "rustrush-demo-*")
 	if err != nil {
 		return Report{}, fmt.Errorf("create temporary build directory: %w", err)
@@ -98,7 +138,7 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 		}
 		return nil
 	}
-	source := filepath.Join(sourceRoot, "examples", "cpu-heavy", "candidate.rs")
+	source := filepath.Join(sourceRoot, "examples", candidateDir, "candidate.rs")
 	candidate := filepath.Join(tempDir, "candidate")
 	if runtime.GOOS == "windows" {
 		candidate += ".exe"
@@ -106,7 +146,7 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 	buildCtx, cancel := context.WithTimeout(ctx, options.Timeout)
 	defer cancel()
 	build := exec.CommandContext(buildCtx, rustc, "--edition=2021", "-C", "opt-level=3", source, "-o", candidate)
-	build.Env = minimalEnvironment()
+	build.Env = compilerEnvironment()
 	build.Dir = tempDir
 	var buildOutput bytes.Buffer
 	build.Stdout = &buildOutput
@@ -129,7 +169,7 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 		return report, nil
 	}
 
-	rustMeasurement, err := measure(ctx, options, "Rust candidate", candidate, nil)
+	rustMeasurement, err := measure(ctx, options, "Rust candidate", candidate, candidateArgs)
 	if err != nil {
 		failure := redactPath(err.Error(), candidate, "[candidate]")
 		failure = redactPath(failure, tempDir, "[temporary build directory]")
@@ -144,7 +184,7 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 		return report, nil
 	}
 	report.Measurements = append(report.Measurements, rustMeasurement)
-	if goMeasurement.Samples[0].Output != rustMeasurement.Samples[0].Output {
+	if !outputsMatch(goMeasurement, rustMeasurement) {
 		report.Correctness = "FAILED"
 		report.Reason = "The implementations returned different checksums; performance comparison is invalid."
 		report.Limitations = append(report.Limitations, "Correctness mismatch detected before interpreting performance.")
@@ -168,6 +208,24 @@ func RunDemo(ctx context.Context, options DemoOptions) (Report, error) {
 		return Report{}, err
 	}
 	return report, nil
+}
+
+func outputsMatch(baseline, candidate Measurement) bool {
+	if len(baseline.Samples) == 0 || len(candidate.Samples) == 0 {
+		return false
+	}
+	expected := baseline.Samples[0].Output
+	for _, sample := range baseline.Samples {
+		if sample.Output != expected {
+			return false
+		}
+	}
+	for _, sample := range candidate.Samples {
+		if sample.Output != expected {
+			return false
+		}
+	}
+	return true
 }
 
 func redactBuildOutput(output, source, tempDir, rustc string) string {
@@ -242,7 +300,17 @@ func measure(ctx context.Context, options DemoOptions, name, executable string, 
 
 func minimalEnvironment() []string {
 	var env []string
-	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "HOME"} {
+	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
+func compilerEnvironment() []string {
+	env := minimalEnvironment()
+	for _, key := range []string{"RUSTUP_HOME", "CARGO_HOME", "INCLUDE", "LIB", "LIBPATH", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion"} {
 		if value, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+value)
 		}

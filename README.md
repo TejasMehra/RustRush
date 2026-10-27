@@ -1,6 +1,6 @@
 # RustRush
 
-RustRush is a local-first experiment for measuring whether a small CPU-heavy operation is worth rewriting in Rust. It records real measurements, checks that the built-in Go and Rust workloads produce the same checksum, and reports `INCONCLUSIVE` rather than inventing a comparison when Rust is unavailable.
+RustRush is a local-first experiment for measuring whether a small backend operation is worth rewriting in Rust. When Rust is available, it records real measurements and checks that built-in Go and Rust workloads produce matching outputs; otherwise it reports `INCONCLUSIVE` rather than inventing a comparison.
 
 ## Requirements
 
@@ -20,6 +20,8 @@ go test ./...
 go run ./cmd/rustrush doctor
 go run ./cmd/rustrush analyze .
 go run ./cmd/rustrush demo
+go run ./cmd/rustrush demo --workload json --iterations 10000
+go run ./cmd/rustrush demo --workload database-fixture --iterations 1000
 ```
 
 The demo writes `results/latest.json` and `results/latest.md`. To adjust its workload:
@@ -45,6 +47,8 @@ go run ./cmd/rustrush compare results/latest.json results/another-run.json
 - Checks Go and Rust toolchain availability with `doctor`.
 - Scans source files without executing them. It detects a small set of languages and reports low-confidence static hypotheses for loops, JSON, database, and network patterns.
 - Runs one deterministic integer-mixing CPU workload implemented in Go and Rust.
+- Runs a fixture-based JSON integer-array transformation implemented in Go and Rust; the Rust parser is deliberately limited to the built-in fixture shape.
+- Runs a CSV-backed filter-and-aggregate mock implemented in Go and Rust; it is explicitly not a real database benchmark.
 - Gates performance interpretation on a matching output checksum.
 - Records raw process timings, nearest-rank p50/p95/p99, median throughput, environment metadata, assumptions, and limitations in a versioned JSON report.
 - Renders and compares saved reports locally.
@@ -63,7 +67,7 @@ Reports contain no source contents or environment-variable values. The demo reco
 
 ## Current limitations
 
-This is an initial vertical slice, not the full product vision. It does not yet generate candidates from user code, profile arbitrary applications, run JSON/database examples, calculate migration ROI, collect resource metrics, or support AI integrations. Static findings are simple pattern matches. The CLI intentionally does not advertise commands for these unfinished features.
+This is an initial vertical slice, not the full product vision. It does not yet generate candidates from user code, profile arbitrary applications, benchmark a real database, calculate migration ROI, collect resource metrics, or support AI integrations. Static findings are simple pattern matches. The CLI intentionally does not advertise commands for these unfinished features.
 
 See [TODO.md](TODO.md) for implementation status, [ARCHITECTURE.md](ARCHITECTURE.md) for module boundaries, [benchmark methodology](docs/benchmark-methodology.md), and [report schema](docs/report-schema.md).
 

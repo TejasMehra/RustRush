@@ -8,6 +8,8 @@ This status describes the checked-in implementation; items marked planned are no
 - [x] Local source inventory for common languages and low-confidence loop, serialization, database, and network hypotheses.
 - [x] Dependency/build and credential-like path exclusions; analysis does not execute source.
 - [x] Deterministic Go baseline and corresponding Rust integer-mixing candidate source.
+- [x] Shared JSON integer-array fixture, Go transformation baseline, and dependency-free Rust candidate for the fixture shape.
+- [x] Shared CSV filter-and-aggregate mock with Go baseline, Rust candidate source, and explicit non-database limitations.
 - [x] Checksum correctness gate, warm-up, repeated process timings, raw JSON samples, and honest missing-compiler reporting.
 - [x] Versioned JSON plus local Markdown reports and workload-compatible report comparison.
 - [x] Unit tests for statistics, analysis exclusions, report validation, and comparison guards.
@@ -16,7 +18,7 @@ This status describes the checked-in implementation; items marked planned are no
 ## Planned
 
 - [ ] Compile and checksum-verify the Rust candidate end-to-end on a machine with a supported Rust toolchain; this environment has no Rust compiler or Windows C++ linker.
-- [ ] Add JSON transformation and database-backed examples with shared fixtures and correctness tests.
+- [ ] Add and validate a real local database-backed example with shared fixtures and correctness tests.
 - [ ] Add isolated candidate templates and application-specific benchmark adapters.
 - [ ] Add profiling adapters and richer evidence-based analysis.
 - [ ] Add transparent migration ROI inputs and scenarios.

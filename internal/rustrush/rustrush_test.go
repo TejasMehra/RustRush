@@ -16,6 +16,88 @@ func TestRunWorkloadIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestTransformJSONDoublesSignedIntegers(t *testing.T) {
+	output, err := TransformJSON([]byte(`{"values":[0,1,7,42,-5]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != `{"values":[0,2,14,84,-10]}` {
+		t.Fatalf("unexpected transformed JSON: %s", output)
+	}
+}
+
+func TestTransformJSONHandlesEmptyArraysAndIntegerOverflow(t *testing.T) {
+	empty, err := TransformJSON([]byte(`{"values":[]}`))
+	if err != nil || string(empty) != `{"values":[]}` {
+		t.Fatalf("empty array transform = %s, %v", empty, err)
+	}
+	wrapped, err := TransformJSON([]byte(`{"values":[9223372036854775807]}`))
+	if err != nil || string(wrapped) != `{"values":[-2]}` {
+		t.Fatalf("overflow transform = %s, %v", wrapped, err)
+	}
+}
+
+func TestTransformJSONRejectsUnsupportedFixtureShapes(t *testing.T) {
+	for _, input := range []string{
+		`{"values":[1],"extra":true}`,
+		`{"values":[1]} {}`,
+		`{"values":[1.5]}`,
+		`{"values":[null]}`,
+		`{"values":null}`,
+		`{}`,
+	} {
+		if _, err := TransformJSON([]byte(input)); err == nil {
+			t.Fatalf("unsupported fixture was accepted: %s", input)
+		}
+	}
+}
+
+func TestRunJSONWorkloadUsesFixtureRepeatedly(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "fixture.json")
+	if err := os.WriteFile(fixture, []byte(`{"values":[2,-3]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := RunJSONWorkload(fixture, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != `{"values":[4,-6]}` {
+		t.Fatalf("unexpected workload output: %s", output)
+	}
+}
+
+func TestBuiltInJSONFixtureHasExpectedTransformation(t *testing.T) {
+	fixture := filepath.Join("..", "..", "examples", "json-transform", "fixture.json")
+	output, err := RunJSONWorkload(fixture, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != `{"values":[0,2,14,84,-10]}` {
+		t.Fatalf("unexpected built-in fixture output: %s", output)
+	}
+}
+
+func TestRunDatabaseFixtureAggregatesActiveRows(t *testing.T) {
+	fixture := filepath.Join("..", "..", "examples", "database-fixture", "records.csv")
+	output, err := RunDatabaseFixture(fixture, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "42" {
+		t.Fatalf("unexpected fixture aggregate: %s", output)
+	}
+}
+
+func TestRunDatabaseFixtureRejectsInvalidRows(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "records.csv")
+	if err := os.WriteFile(fixture, []byte("id,active,amount\n1,maybe,4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunDatabaseFixture(fixture, 1); err == nil {
+		t.Fatal("invalid active field was accepted")
+	}
+}
+
 func TestSummarizeUsesNearestRankAndMedianThroughput(t *testing.T) {
 	samples := []Sample{{DurationNS: 100}, {DurationNS: 300}, {DurationNS: 200}, {DurationNS: 400}, {DurationNS: 500}}
 	summary, err := Summarize(samples, 10)
@@ -70,6 +152,18 @@ func TestDecideRequiresCorrectnessAndReliableEvidence(t *testing.T) {
 	verdict, _ = Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
 	if verdict != VerdictInconclusive {
 		t.Fatalf("noisy measurements did not produce an inconclusive verdict: %s", verdict)
+	}
+}
+
+func TestIncorrectCandidateOutputCannotPassCorrectnessGate(t *testing.T) {
+	baseline := Measurement{Samples: []Sample{{Output: "expected"}, {Output: "expected"}}}
+	incorrect := Measurement{Samples: []Sample{{Output: "wrong"}, {Output: "wrong"}}}
+	if outputsMatch(baseline, incorrect) {
+		t.Fatal("intentionally incorrect candidate passed the correctness gate")
+	}
+	verdict, _ := Decide("FAILED", baseline, incorrect)
+	if verdict != VerdictInconclusive {
+		t.Fatalf("incorrect candidate received a performance verdict: %s", verdict)
 	}
 }
 

@@ -27,3 +27,30 @@ jobs:
         run: go vet ./...
       - name: Build CLI
         run: go build ./cmd/rustrush
+
+  rust-demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - name: Install Rust compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rustc
+          rustc --version
+      - name: Build, run, and correctness-check each candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for workload in cpu json database-fixture; do
+            output="$RUNNER_TEMP/rustrush-$workload"
+            go run ./cmd/rustrush demo \
+              --workload "$workload" \
+              --iterations 10000 \
+              --repetitions 3 \
+              --out "$output"
+            grep -q '"correctness": "PASSED_FOR_CHECKSUM"' "$output/latest.json"
+          done

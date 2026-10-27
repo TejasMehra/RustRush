@@ -65,3 +65,20 @@ jobs:
               )
             ' "$output/latest.json"
           done
+      - name: Candidate workflow with Go baseline and Rust candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/rustrush-candidate"
+          go run ./cmd/rustrush candidate \
+            --baseline examples/candidate-template/baseline \
+            --candidate examples/candidate-template/candidate.rs \
+            --input examples/candidate-template/input.txt \
+            --iterations 10000 --repetitions 3 --allow-execute \
+            --out "$output"
+          jq -e '
+            .correctness == "PASSED_FOR_CHECKSUM"
+            and (.measurements | length == 2)
+            and ([.measurements[].correctness_output] | unique | length == 1)
+            and all(.measurements[]; .status == "measured" and .error_count == 0 and (.samples | length) == 3)
+          ' "$output/latest.json"

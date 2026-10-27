@@ -11,6 +11,58 @@ The CLI, source scanner, and baseline run without Rust. No API key, telemetry, o
 
 For the Rust comparison, install Rust with [rustup](https://rustup.rs/). On Windows, the MSVC Rust toolchain also requires the Visual C++ build tools and Windows SDK.
 
+## First run (no API key, no Rust required)
+
+Prerequisites: Go 1.22+ and a clone of this repository. Nothing is uploaded and no account is needed.
+
+```powershell
+git clone https://github.com/TejasMehra/RustRush.git
+cd RustRush
+go run ./cmd/rustrush demo
+```
+
+What you should see: the Markdown report printed to the terminal, then `Reports written to results/latest.json and results/latest.md`. Both files are regenerated from the current run; no performance number is hardcoded. Open `results/latest.md` to read it.
+
+- **Without `rustc`** (verified locally on Windows): the Go baseline is measured for real, the Rust candidate shows `unavailable`, the verdict is `INCONCLUSIVE`, and the command exits 0. This is not a Go-vs-Rust comparison.
+- **With `rustc`**: the checked-in Rust candidate is compiled, outputs must match in an untimed correctness probe, and only then are paired timings recorded. The verdict can then be `PORT`, `OPTIMIZE_FIRST`, `DONT_PORT`, or `INCONCLUSIVE` (too noisy). Rust compilation and comparison are verified only in the hosted CI `rust-demo` job, not on the author's machine.
+
+Look at these report fields first: `verdict` and `reason`, `correctness` (`PASSED_FOR_CHECKSUM` means the gate passed), each measurement's `status`, `error_count`, and `samples`, and `environment`. Use `--workload json` or `--workload database-fixture` for the other built-in workloads, and `--out DIR` to keep several runs.
+
+## Try it on your own backend
+
+`rustrush guide` checks, without executing anything, whether your project can use the guided workflow:
+
+```powershell
+go run ./cmd/rustrush guide path\to\your\project
+```
+
+Supported project types:
+
+| Project | Level | What you get |
+|---|---|---|
+| Go module (`go.mod`) | `candidate_workflow` | Candidate operations (functions with loops, JSON, DB or network calls, ranked as static hypotheses), main packages found, next steps |
+| Node, Python, Java/Kotlin, Rust, Ruby, PHP markers | `analysis_only` | Static findings only; the paired benchmark needs a Go baseline |
+| Anything else | `unsupported` | An explanation and pointers; no support for arbitrary repositories is claimed |
+
+Then benchmark one operation you have isolated into a small Go `main` package against a hand-written, dependency-free, single-file Rust port. A working template lives in [examples/candidate-template](examples/candidate-template):
+
+```powershell
+go run ./cmd/rustrush candidate `
+  --baseline examples/candidate-template/baseline `
+  --candidate examples/candidate-template/candidate.rs `
+  --input examples/candidate-template/input.txt `
+  --allow-execute
+```
+
+Contract: both programs accept `--iterations N` (and `--input FILE` when you pass one) and print one deterministic result to stdout. RustRush then:
+
+1. Refuses to run unless you pass `--allow-execute`, since it builds and runs the programs you point it at (review them first).
+2. Copies the baseline module and candidate into a temporary directory (originals are never modified; `.env`, credential-like files, symlinks, and dependency/build directories are not copied) and builds there. Go builds use `GOPROXY=off` and `-mod=readonly`, so no network fetches; a baseline that needs uncached dependencies reports `build_failed`.
+3. Rejects candidates using `include!`/`include_str!`/`include_bytes!`, `extern crate`, external `mod x;`, or linker attributes.
+4. Runs untimed correctness probes and times nothing unless outputs are identical, then uses the same paired benchmark engine and the same JSON/Markdown report format as the demo.
+
+This is not a sandbox: programs run with a timeout, a minimal environment, no shell, and an empty working directory, but with your user's permissions. Do not run code you do not trust. RustRush does not generate or translate code and does not upload anything.
+
 ## Quick start
 
 From the repository root:
@@ -19,6 +71,7 @@ From the repository root:
 go test ./...
 go run ./cmd/rustrush doctor
 go run ./cmd/rustrush analyze .
+go run ./cmd/rustrush guide .
 go run ./cmd/rustrush demo
 go run ./cmd/rustrush demo --workload json --iterations 10000
 go run ./cmd/rustrush demo --workload database-fixture --iterations 1000
@@ -70,7 +123,7 @@ Reports contain no source contents or environment-variable values. The demo reco
 
 ## Current limitations
 
-This is an initial vertical slice, not the full product vision. It does not yet generate candidates from user code, profile arbitrary applications, benchmark a real database, collect resource metrics, or support AI integrations. Static findings are simple pattern matches. The CLI intentionally does not advertise commands for these unfinished features.
+This is an initial vertical slice, not the full product vision. The `candidate` workflow benchmarks hand-written candidates for a single Go `main` package; it does not generate or translate code, profile applications, handle Go modules with uncached dependencies, or support non-Go baselines. It does not yet benchmark a real database, collect resource metrics, or support AI integrations. Static findings and `guide` candidate operations are simple pattern matches.
 
 See [TODO.md](TODO.md) for implementation status, [ARCHITECTURE.md](ARCHITECTURE.md) for module boundaries, [benchmark methodology](docs/benchmark-methodology.md), [report schema](docs/report-schema.md), and the [ROI model](docs/roi-model.md).
 
@@ -79,6 +132,9 @@ See [TODO.md](TODO.md) for implementation status, [ARCHITECTURE.md](ARCHITECTURE
 - **`rustc was not found on PATH`:** Install Rust with rustup, reopen the terminal, and confirm `rustc --version` works.
 - **Rust candidate build fails on Windows:** Install the Visual C++ build tools and Windows SDK, then rerun the demo. RustRush reports build failures instead of reporting a speedup.
 - **Verdict is `INCONCLUSIVE`:** Check the report for unavailable tools, checksum errors, or high trial variability. A report without a Rust measurement is not a Go-vs-Rust comparison.
+- **`candidate` says `refusing to build and run`:** Add `--allow-execute` after reviewing the code.
+- **`candidate` reports `build_failed` for the baseline:** The module must build offline from a temporary copy (`GOPROXY=off`); vendor or pre-download its dependencies, or isolate the operation in a dependency-free main package.
+- **Correctness `FAILED`:** The two programs printed different (or empty) stdout for the same arguments; no timing was done. Fix the candidate first.
 
 ## Development
 

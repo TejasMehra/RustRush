@@ -32,6 +32,10 @@ func run(args []string) error {
 		return doctor()
 	case "analyze":
 		return analyze(args[1:])
+	case "guide":
+		return guide(args[1:])
+	case "candidate":
+		return candidate(args[1:])
 	case "demo":
 		return demo(args[1:])
 	case "report":
@@ -58,6 +62,8 @@ func printUsage(w *os.File) {
 Usage:
   rustrush doctor
   rustrush analyze [path]
+  rustrush guide [--json] [path]
+  rustrush candidate --baseline DIR --candidate FILE.rs [--input FILE] --allow-execute [--iterations N] [--repetitions N] [--timeout D] [--out DIR]
   rustrush demo [--workload cpu|json|database-fixture] [--iterations N] [--repetitions N] [--out DIR]
   rustrush report <report.json>
   rustrush compare <report-a.json> <report-b.json>
@@ -66,6 +72,8 @@ Usage:
 Commands:
   doctor    Check local toolchain availability
   analyze   Inspect source files without executing them
+  guide     Check whether your project is supported and list candidate operations (no execution)
+  candidate Benchmark your Go main package against your single-file Rust candidate (needs --allow-execute)
   demo      Run a built-in CPU, JSON, or database-fixture workload
   report    Render a saved JSON report as Markdown
   compare   Compare measured throughput from two saved reports
@@ -125,6 +133,95 @@ func analyze(args []string) error {
 		fmt.Printf("- [%s] %s (%s): %s\n", finding.Category, finding.Description, finding.Location, finding.NextStep)
 	}
 	fmt.Println("Note: static findings are hypotheses, not measured bottlenecks.")
+	return nil
+}
+
+func guide(args []string) error {
+	flags := flag.NewFlagSet("guide", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
+	help, err := parseFlags(flags, args)
+	if err != nil {
+		return err
+	}
+	if help {
+		return nil
+	}
+	root := "."
+	if flags.NArg() > 1 {
+		return errors.New("guide accepts at most one project path")
+	}
+	if flags.NArg() == 1 {
+		root = flags.Arg(0)
+	}
+	result, err := rustrush.Guide(root)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return rustrush.WriteJSON(os.Stdout, result)
+	}
+	fmt.Printf("Project: %s\nSupport level: %s\n", result.Project, result.Support)
+	for _, projectType := range result.ProjectTypes {
+		fmt.Printf("- Detected %s (%s): %s\n", projectType.Name, projectType.Marker, projectType.Support)
+	}
+	if len(result.MainPackages) > 0 {
+		fmt.Printf("Go main packages: %v\n", result.MainPackages)
+	}
+	if len(result.Candidates) > 0 {
+		fmt.Println("Candidate operations (static hypotheses, not measured bottlenecks):")
+		for _, candidate := range result.Candidates {
+			fmt.Printf("- %s (%s) loop depth %d %v: %s\n", candidate.Function, candidate.Location, candidate.LoopDepth, candidate.Signals, candidate.Notes)
+		}
+	}
+	fmt.Println("Next steps:")
+	for _, step := range result.NextSteps {
+		fmt.Printf("  * %s\n", step)
+	}
+	fmt.Println("Limitations:")
+	for _, limitation := range result.Limitations {
+		fmt.Printf("  * %s\n", limitation)
+	}
+	return nil
+}
+
+func candidate(args []string) error {
+	flags := flag.NewFlagSet("candidate", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	baseline := flags.String("baseline", "", "Go module root containing a main package that accepts --iterations")
+	source := flags.String("candidate", "", "single-file dependency-free Rust candidate (.rs)")
+	input := flags.String("input", "", "optional input file passed to both programs as --input")
+	iterations := flags.Uint64("iterations", rustrush.DefaultIterations, "workload iterations per process")
+	repetitions := flags.Int("repetitions", rustrush.DefaultRepetitions, "measurement trials per implementation")
+	timeout := flags.Duration("timeout", 30*time.Second, "maximum time for each build and each process run")
+	outDir := flags.String("out", "results", "directory for generated reports")
+	allow := flags.Bool("allow-execute", false, "consent to building and running the supplied programs locally")
+	help, err := parseFlags(flags, args)
+	if err != nil {
+		return err
+	}
+	if help {
+		return nil
+	}
+	if flags.NArg() != 0 {
+		return errors.New("candidate does not accept positional arguments")
+	}
+	report, err := rustrush.RunCandidate(context.Background(), rustrush.CandidateOptions{
+		BaselineDir: *baseline, CandidateFile: *source, InputFile: *input,
+		Iterations: *iterations, Repetitions: *repetitions, Timeout: *timeout, AllowExecute: *allow,
+	})
+	if err != nil {
+		return err
+	}
+	if err := rustrush.WriteReport(*outDir, report); err != nil {
+		return err
+	}
+	fmt.Print(rustrush.RenderMarkdown(report))
+	fmt.Printf("\nReports written to %s and %s\n",
+		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"))
+	if report.Verdict == rustrush.VerdictInconclusive {
+		fmt.Println("The comparison is inconclusive; see limitations in the report.")
+	}
 	return nil
 }
 

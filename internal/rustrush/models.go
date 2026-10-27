@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -217,6 +218,7 @@ func RenderMarkdown(report Report) string {
 	normalizeReportEvidence(&report)
 	out := fmt.Sprintf("# RustRush benchmark report\n\n- **Schema:** %s\n- **Generated:** %s\n- **Project:** %s\n- **Component:** %s\n- **Verdict:** `%s`\n- **Correctness gate:** %s\n\n## Workload\n\n%s\n\nIterations per process: %d. Reproduction: `%s`.\n\nAll durations and throughput below are measured observations, not estimates. Latency percentiles are process wall-clock durations (startup, argument parsing, workload, and output capture), not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors.\n\n## Measurements\n\n| Implementation | Status | Trials | Warm-ups | Errors | Median/p50 (ms) | p95 (ms) | p99 (ms) | Ops/sec | CV |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
 		report.SchemaVersion, report.GeneratedAt.UTC().Format(time.RFC3339), report.Project, report.Component, report.Verdict, report.Correctness, report.Workload, report.Iterations, report.Reproduction)
+	sampleNotes := ""
 	for _, measurement := range report.Measurements {
 		if measurement.Status != "measured" || !validMeasurement(measurement) {
 			status := measurement.Status
@@ -226,7 +228,10 @@ func RenderMarkdown(report Report) string {
 			out += fmt.Sprintf("| %s | %s | %d | %d | %d | n/a | n/a | n/a | n/a | n/a |\n",
 				measurement.Name, status, len(measurement.Samples), measurement.WarmupRuns, measurement.ErrorCount)
 			if len(measurement.Samples) > 0 {
-				out += fmt.Sprintf("\n**%s partial raw process samples (ns):** %v\n", measurement.Name, sampleDurations(measurement.Samples))
+				sampleNotes += fmt.Sprintf("\n**%s partial raw process samples (ns):** %v\n", measurement.Name, sampleDurations(measurement.Samples))
+			}
+			if measurement.Error != "" {
+				sampleNotes += fmt.Sprintf("\n**%s error:** %s\n", measurement.Name, strings.ReplaceAll(strings.ReplaceAll(measurement.Error, "`", "'"), "\n", " "))
 			}
 			continue
 		}
@@ -234,8 +239,9 @@ func RenderMarkdown(report Report) string {
 			measurement.Name, measurement.Status, measurement.Repetitions, measurement.WarmupRuns, measurement.ErrorCount,
 			float64(measurement.MedianNS)/1e6, float64(measurement.P95NS)/1e6,
 			float64(measurement.P99NS)/1e6, measurement.OpsPerSec, measurement.CoefficientOfVariation)
-		out += fmt.Sprintf("\n**%s raw process samples (ns):** %v\n", measurement.Name, sampleDurations(measurement.Samples))
+		sampleNotes += fmt.Sprintf("\n**%s raw process samples (ns):** %v\n", measurement.Name, sampleDurations(measurement.Samples))
 	}
+	out += sampleNotes
 	if report.ThroughputDeltaPercent != nil && report.ThroughputDeltaOpsPerSec != nil {
 		out += fmt.Sprintf("\n**Measured throughput delta** (Rust candidate vs Go baseline): %+.2f ops/s (%+.2f%%).\n",
 			*report.ThroughputDeltaOpsPerSec, *report.ThroughputDeltaPercent)

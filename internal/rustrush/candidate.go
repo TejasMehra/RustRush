@@ -1,0 +1,408 @@
+package rustrush
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"go/parser"
+	"go/token"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"time"
+)
+
+const (
+	maxCopyFiles = 5000
+	maxCopyBytes = 50 << 20
+)
+
+// forbiddenRustPatterns rejects constructs that let a single-file candidate
+// read other files at compile time or link external code. This is a
+// best-effort guard, not a sandbox.
+var forbiddenRustPatterns = regexp.MustCompile(`(?m)(\binclude(_str|_bytes)?\s*!|#!?\[\s*(link|link_args|link_name|path)\b|\bextern\s+crate\b|\bmod\s+\w+\s*;)`)
+
+type buildRunner func(ctx context.Context, tool string, args []string, dir string, env []string) (string, error)
+
+type CandidateOptions struct {
+	BaselineDir   string
+	CandidateFile string
+	InputFile     string
+	Iterations    uint64
+	Repetitions   int
+	Timeout       time.Duration
+	// AllowExecute is explicit consent to build and run the supplied programs.
+	AllowExecute bool
+
+	runProcess processRunner
+	build      buildRunner
+	lookPath   func(string) (string, error)
+}
+
+// RunCandidate benchmarks a user-supplied Go main package against a user-supplied
+// single-file Rust candidate. Sources are copied; the originals are never modified.
+func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error) {
+	if !options.AllowExecute {
+		return Report{}, errors.New("refusing to build and run supplied programs without --allow-execute; review the code first, since this is process isolation with a timeout and minimal environment, not a sandbox")
+	}
+	if options.Iterations == 0 || options.Repetitions < 3 || options.Repetitions > 100 {
+		return Report{}, errors.New("iterations must be positive and repetitions must be between 3 and 100")
+	}
+	if options.Timeout <= 0 {
+		return Report{}, errors.New("timeout must be positive")
+	}
+	baselineDir, err := validateBaselineDir(options.BaselineDir)
+	if err != nil {
+		return Report{}, err
+	}
+	candidateSource, err := readCandidateSource(options.CandidateFile)
+	if err != nil {
+		return Report{}, err
+	}
+	inputName := ""
+	if options.InputFile != "" {
+		if err := requireRegularFile(options.InputFile, "input file"); err != nil {
+			return Report{}, err
+		}
+		inputName = filepath.Base(options.InputFile)
+	}
+	lookPath := options.lookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	build := options.build
+	if build == nil {
+		build = runBuild
+	}
+	goTool, err := lookPath("go")
+	if err != nil {
+		return Report{}, errors.New("the go tool was not found on PATH; it is required to build the baseline")
+	}
+
+	tempDir, err := os.MkdirTemp("", "rustrush-candidate-*")
+	if err != nil {
+		return Report{}, fmt.Errorf("create temporary directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	baselineCopy := filepath.Join(tempDir, "baseline")
+	workDir := filepath.Join(tempDir, "work")
+	binDir := filepath.Join(tempDir, "bin")
+	candidateCopy := filepath.Join(tempDir, "candidate", "candidate.rs")
+	for _, dir := range []string{workDir, binDir, filepath.Dir(candidateCopy)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return Report{}, fmt.Errorf("create temporary directory: %w", err)
+		}
+	}
+	if err := copyTree(baselineDir, baselineCopy); err != nil {
+		return Report{}, err
+	}
+	if err := os.WriteFile(candidateCopy, candidateSource, 0o600); err != nil {
+		return Report{}, fmt.Errorf("copy candidate: %w", err)
+	}
+	var prefix []string
+	if inputName != "" {
+		inputCopy := filepath.Join(tempDir, "input", inputName)
+		if err := os.MkdirAll(filepath.Dir(inputCopy), 0o700); err != nil {
+			return Report{}, fmt.Errorf("create temporary directory: %w", err)
+		}
+		if err := copyFile(options.InputFile, inputCopy); err != nil {
+			return Report{}, err
+		}
+		prefix = []string{"--input", inputCopy}
+	}
+
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	baselineExe := filepath.Join(binDir, "baseline"+suffix)
+	candidateExe := filepath.Join(binDir, "candidate"+suffix)
+	redact := func(text string) string {
+		for _, pair := range [][2]string{
+			{tempDir, "[temporary directory]"}, {filepath.ToSlash(tempDir), "[temporary directory]"},
+			{goTool, "[go]"},
+		} {
+			text = redactPath(text, pair[0], pair[1])
+		}
+		return strings.TrimSpace(text)
+	}
+
+	report := Report{
+		SchemaVersion: SchemaVersion,
+		GeneratedAt:   time.Now().UTC(),
+		Project:       filepath.Base(baselineDir),
+		Component:     "user-supplied operation (Go main package vs. single-file Rust candidate)",
+		Workload: fmt.Sprintf("Both programs run with --iterations %d%s; stdout must be identical before any timing",
+			options.Iterations, map[bool]string{true: " and the same --input file", false: ""}[inputName != ""]),
+		Iterations:  options.Iterations,
+		Correctness: "NOT_RUN",
+		Verdict:     VerdictInconclusive,
+		Environment: environment(),
+		Limitations: []string{
+			"Supplied programs are executed with a timeout, a minimal environment, and no shell; this is not a sandbox. Review code before running it.",
+			"CPU utilization, memory, allocation counts, and request-level latency are not measured.",
+			"CPU model and background system load are not captured.",
+			"Equivalence is judged only by identical stdout for the supplied inputs; it does not prove semantic equivalence.",
+			"Process startup is included in each sample and can dominate short workloads.",
+		},
+		Reproduction: fmt.Sprintf("rustrush candidate --baseline <go-main-dir> --candidate <candidate.rs>%s --iterations %d --repetitions %d --timeout %s --allow-execute",
+			map[bool]string{true: " --input <file>", false: ""}[inputName != ""], options.Iterations, options.Repetitions, options.Timeout),
+		Assumptions: map[string]string{
+			"timing_scope":  "process startup plus workload execution",
+			"latency_scope": "one process wall-clock duration per repetition",
+			"warmup_runs":   "1 per implementation",
+			"trial_order":   "alternating Go/Rust then Rust/Go, starting with Go",
+			"go_build":      "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built from a temporary copy",
+			"isolation":     "source copies, empty working directory, minimal environment, per-run timeout; not a sandbox",
+		},
+	}
+	runOptions := DemoOptions{
+		Iterations: options.Iterations, Repetitions: options.Repetitions, Timeout: options.Timeout,
+		SourceRoot: workDir, runProcess: options.runProcess,
+	}
+	notRun := func(name, status, message string, count int) Measurement {
+		return Measurement{Name: name, Status: status, Iterations: options.Iterations, Samples: []Sample{}, ErrorCount: count, Error: message}
+	}
+
+	buildCtx, cancelBuild := context.WithTimeout(ctx, options.Timeout)
+	defer cancelBuild()
+	output, err := build(buildCtx, goTool, []string{"build", "-o", baselineExe, "."}, baselineCopy, goBuildEnvironment())
+	if err != nil {
+		status := "build_failed"
+		if errors.Is(buildCtx.Err(), context.DeadlineExceeded) {
+			status = "timed_out"
+		}
+		report.Measurements = []Measurement{
+			notRun("Go baseline", status, buildMessage(redact(output), redact(err.Error())), 1),
+			notRun("Rust candidate", "not_run", "", 0),
+		}
+		report.Reason = "The Go baseline did not build; a performance comparison was not made."
+		report.Limitations = append(report.Limitations, "Baseline compilation failed; no measurements are available.")
+		return report, nil
+	}
+
+	rustc, lookErr := lookPath("rustc")
+	if lookErr != nil || rustc == "" {
+		baseline, measureErr := measure(ctx, runOptions, "Go baseline", baselineExe, prefix)
+		baseline.Error = redact(baseline.Error)
+		report.Measurements = []Measurement{baseline, notRun("Rust candidate", "unavailable", "rustc was not found on PATH", 0)}
+		report.Limitations = append(report.Limitations, "Rust candidate was not built or run because rustc is unavailable; no cross-language comparison is reported.")
+		report.Reason = "The baseline produced measurements, but the Rust comparison could not be completed. Install Rust and rerun."
+		if measureErr != nil {
+			report.Limitations = append(report.Limitations, "The Go baseline failed or timed out.")
+		}
+		return report, nil
+	}
+	report.Environment["rustc_flags"] = "--edition=2021 -C opt-level=3"
+	if options.build == nil {
+		if version, err := exec.CommandContext(ctx, rustc, "--version").Output(); err == nil {
+			report.Environment["rustc"] = strings.TrimSpace(string(version))
+		}
+	}
+	output, err = build(buildCtx, rustc, []string{"--edition=2021", "-C", "opt-level=3", candidateCopy, "-o", candidateExe}, filepath.Dir(candidateCopy), compilerEnvironment())
+	if err != nil {
+		status := "build_failed"
+		if errors.Is(buildCtx.Err(), context.DeadlineExceeded) {
+			status = "timed_out"
+		}
+		report.Measurements = []Measurement{
+			notRun("Go baseline", "not_run", "", 0),
+			notRun("Rust candidate", status, buildMessage(redact(strings.ReplaceAll(output, candidateCopy, "[candidate source]")), redact(err.Error())), 1),
+		}
+		report.Reason = "The Rust candidate did not build; a performance comparison was not made."
+		report.Limitations = append(report.Limitations, "Candidate compilation failed; no measurements are available.")
+		return report, nil
+	}
+
+	baseline, candidate, correctnessPassed, pairErr := measurePair(ctx, runOptions, baselineExe, prefix, candidateExe, prefix)
+	baseline.Error, candidate.Error = redact(baseline.Error), redact(candidate.Error)
+	report.Measurements = []Measurement{baseline, candidate}
+	switch {
+	case pairErr != nil:
+		if correctnessPassed {
+			report.Correctness = "PASSED_FOR_CHECKSUM"
+		}
+		report.Reason = "One or both implementations failed or timed out; their performance cannot be compared."
+		report.Limitations = append(report.Limitations, "Failed or timed-out execution invalidates the comparison.")
+	case !correctnessPassed:
+		report.Correctness = "FAILED"
+		report.Reason = "The correctness probes returned different or empty outputs; timed performance runs were not started."
+		report.Limitations = append(report.Limitations, "Correctness mismatch detected before any timed comparison.")
+	default:
+		report.Correctness = "PASSED_FOR_CHECKSUM"
+		report.Verdict, report.Reason = Decide(report.Correctness, baseline, candidate)
+		if report.Verdict != VerdictInconclusive {
+			deltaOps := candidate.OpsPerSec - baseline.OpsPerSec
+			deltaPercent := deltaOps / baseline.OpsPerSec * 100
+			report.ThroughputDeltaOpsPerSec = &deltaOps
+			report.ThroughputDeltaPercent = &deltaPercent
+		}
+		report.Limitations = append(report.Limitations, "Paired trials alternate implementation order to reduce systematic order bias; this does not eliminate machine noise.")
+	}
+	return report, nil
+}
+
+func buildMessage(output, fallback string) string {
+	if output != "" {
+		return output
+	}
+	return fallback
+}
+
+func goBuildEnvironment() []string {
+	env := compilerEnvironment()
+	for _, key := range []string{"LOCALAPPDATA", "APPDATA", "GOCACHE", "GOPATH", "GOMODCACHE", "GOROOT"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return append(env, "GOFLAGS=-mod=readonly", "GOPROXY=off", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOWORK=off")
+}
+
+func runBuild(ctx context.Context, tool string, args []string, dir string, env []string) (string, error) {
+	command := exec.CommandContext(ctx, tool, args...)
+	command.Dir = dir
+	command.Env = env
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+func requireRegularFile(path, label string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %q must be a regular file (not a directory or symlink)", label, filepath.Base(path))
+	}
+	if info.Size() > maxSourceFileBytes {
+		return fmt.Errorf("%s %q exceeds the %d byte limit", label, filepath.Base(path), maxSourceFileBytes)
+	}
+	return nil
+}
+
+func readCandidateSource(path string) ([]byte, error) {
+	if path == "" {
+		return nil, errors.New("a Rust candidate file is required (--candidate)")
+	}
+	if strings.ToLower(filepath.Ext(path)) != ".rs" {
+		return nil, fmt.Errorf("candidate %q must be a single .rs file", filepath.Base(path))
+	}
+	if err := requireRegularFile(path, "candidate"); err != nil {
+		return nil, err
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read candidate: %w", err)
+	}
+	if match := forbiddenRustPatterns.Find(contents); match != nil {
+		return nil, fmt.Errorf("candidate uses %q, which is not allowed: candidates must be self-contained single files without include!, extern crate, external modules, or linker attributes", strings.TrimSpace(string(match)))
+	}
+	return contents, nil
+}
+
+func validateBaselineDir(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("a Go baseline directory is required (--baseline)")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve baseline: %w", err)
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return "", fmt.Errorf("baseline: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("baseline %q must be a directory containing a Go main package", filepath.Base(path))
+	}
+	root, err := findModuleRoot(absolute)
+	if err != nil {
+		return "", err
+	}
+	if root != absolute {
+		return "", fmt.Errorf("baseline %q must be the module root containing go.mod", filepath.Base(path))
+	}
+	entries, err := os.ReadDir(absolute)
+	if err != nil {
+		return "", fmt.Errorf("read baseline: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(absolute, name), nil, parser.PackageClauseOnly)
+		if err == nil && file.Name.Name == "main" {
+			return absolute, nil
+		}
+	}
+	return "", errors.New("baseline directory has no Go main package at its top level; add a small main package that accepts --iterations")
+}
+
+func findModuleRoot(dir string) (string, error) {
+	if info, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil || info.IsDir() {
+		return "", errors.New("baseline must be a Go module root containing go.mod")
+	}
+	return dir, nil
+}
+
+// copyTree copies regular files, skipping symlinks, dependency/build
+// directories, and credential-like names, with file-count and size caps.
+func copyTree(source, destination string) error {
+	files, total := 0, int64(0)
+	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != source && (skippedDirectory(entry.Name()) || sensitiveFilename(entry.Name())) {
+				return filepath.SkipDir
+			}
+			return os.MkdirAll(filepath.Join(destination, rel), 0o700)
+		}
+		if !entry.Type().IsRegular() || sensitiveFilename(entry.Name()) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files++
+		total += info.Size()
+		if files > maxCopyFiles || total > maxCopyBytes {
+			return fmt.Errorf("baseline is too large to copy (limit %d files / %d MiB); point --baseline at a small benchmark module", maxCopyFiles, maxCopyBytes>>20)
+		}
+		return copyFile(path, filepath.Join(destination, rel))
+	})
+	if err != nil {
+		return fmt.Errorf("copy baseline: %w", err)
+	}
+	return nil
+}
+
+func copyFile(source, destination string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}

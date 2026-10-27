@@ -4,7 +4,11 @@ This status describes the checked-in implementation; items marked planned are no
 
 ## Implemented and tested
 
-- [x] Go CLI with `doctor`, `analyze`, `demo`, `report`, `compare`, and `roi`.
+- [x] Go CLI with `doctor`, `analyze`, `guide`, `candidate`, `demo`, `report`, `compare`, and `roi`.
+- [x] `guide`: non-executing project-type detection (Go module = candidate workflow; other markers = analysis only; otherwise unsupported) and ranked Go candidate-operation hypotheses.
+- [x] `candidate`: explicit-consent workflow that copies and builds a user Go main package and a single-file Rust candidate in a temp dir, applies the correctness gate, and reuses the paired benchmark engine and report format. Verified locally with a real Go build and injected-runner tests; Rust compilation is exercised only in the CI `rust-demo` job.
+- [x] Tests for guide classification, unsupported/invalid inputs, consent, source preservation, failed/timed-out candidates, build failures, missing rustc, and correctness-gate behaviour.
+- [x] Markdown report keeps tables intact and surfaces measurement errors.
 - [x] Local source inventory for common languages and low-confidence loop, serialization, database, and network hypotheses.
 - [x] Dependency/build and credential-like path exclusions; analysis does not execute source.
 - [x] Deterministic Go baseline and corresponding Rust integer-mixing candidate source.
@@ -24,7 +28,8 @@ This status describes the checked-in implementation; items marked planned are no
 ## Planned
 
 - [ ] Add and validate a real local database-backed example with shared fixtures and correctness tests.
-- [ ] Add isolated candidate templates and application-specific benchmark adapters.
+- [ ] Add OS-level or container isolation for `candidate` (currently timeout + minimal environment only) and non-Go baselines.
+- [ ] Add application-specific benchmark adapters beyond the `--iterations`/`--input` contract.
 - [ ] Add profiling adapters and richer evidence-based analysis.
 - [ ] Add sensitivity analysis and connect optional ROI assumptions to exported benchmark reports.
 - [ ] Expand report validation, import/export, redaction regression tests, and confidence-interval/statistical reliability analysis.

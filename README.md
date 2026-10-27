@@ -22,6 +22,7 @@ go run ./cmd/rustrush analyze .
 go run ./cmd/rustrush demo
 go run ./cmd/rustrush demo --workload json --iterations 10000
 go run ./cmd/rustrush demo --workload database-fixture --iterations 1000
+go run ./cmd/rustrush roi --monthly-operations 3600000 --baseline-cpu-seconds 0.001 --target-cpu-seconds 0.0005 --cpu-hour-price 10 --engineering-hours 10 --engineering-hourly-cost 100 --monthly-maintenance-cost-delta 1
 ```
 
 The demo writes `results/latest.json` and `results/latest.md`. To adjust its workload:
@@ -52,6 +53,7 @@ go run ./cmd/rustrush compare results/latest.json results/another-run.json
 - Gates performance interpretation on a matching output checksum.
 - Records raw process timings, nearest-rank p50/p95/p99, median throughput, environment metadata, assumptions, and limitations in a versioned JSON report.
 - Renders and compares saved reports locally.
+- Calculates optional migration ROI from explicit user assumptions; it does not infer CPU costs or engineering effort from benchmark timings.
 
 ## Interpreting results
 
@@ -67,9 +69,9 @@ Reports contain no source contents or environment-variable values. The demo reco
 
 ## Current limitations
 
-This is an initial vertical slice, not the full product vision. It does not yet generate candidates from user code, profile arbitrary applications, benchmark a real database, calculate migration ROI, collect resource metrics, or support AI integrations. Static findings are simple pattern matches. The CLI intentionally does not advertise commands for these unfinished features.
+This is an initial vertical slice, not the full product vision. It does not yet generate candidates from user code, profile arbitrary applications, benchmark a real database, collect resource metrics, or support AI integrations. Static findings are simple pattern matches. The CLI intentionally does not advertise commands for these unfinished features.
 
-See [TODO.md](TODO.md) for implementation status, [ARCHITECTURE.md](ARCHITECTURE.md) for module boundaries, [benchmark methodology](docs/benchmark-methodology.md), and [report schema](docs/report-schema.md).
+See [TODO.md](TODO.md) for implementation status, [ARCHITECTURE.md](ARCHITECTURE.md) for module boundaries, [benchmark methodology](docs/benchmark-methodology.md), [report schema](docs/report-schema.md), and the [ROI model](docs/roi-model.md).
 
 ## Troubleshooting
 

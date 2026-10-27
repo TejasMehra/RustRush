@@ -2,6 +2,7 @@ package rustrush
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,4 +297,70 @@ func TestRedactBuildOutputRemovesLocalPaths(t *testing.T) {
 		!strings.Contains(output, "[rustc]") {
 		t.Fatalf("expected sanitized diagnostic placeholders, got %s", output)
 	}
+}
+
+func TestCalculateROIModelsOnlySuppliedAssumptions(t *testing.T) {
+	inputs := ROIInputs{
+		MonthlyOperations:              floatPointer(3_600_000),
+		BaselineCPUSecondsPerOperation: floatPointer(0.001),
+		TargetCPUSecondsPerOperation:   floatPointer(0.0005),
+		CPUCostPerHourUSD:              floatPointer(10),
+		EngineeringHours:               floatPointer(10),
+		EngineeringCostPerHourUSD:      floatPointer(100),
+		MonthlyMaintenanceCostDeltaUSD: floatPointer(1),
+	}
+	result, err := CalculateROI(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CurrentMonthlyCPUHours == nil || *result.CurrentMonthlyCPUHours != 1 {
+		t.Fatalf("unexpected current CPU-hours estimate: %+v", result.CurrentMonthlyCPUHours)
+	}
+	if result.TargetMonthlyCostUSD == nil || *result.TargetMonthlyCostUSD != 5 {
+		t.Fatalf("unexpected target monthly cost: %+v", result.TargetMonthlyCostUSD)
+	}
+	if result.MonthlyInfrastructureSavingsUSD == nil || *result.MonthlyInfrastructureSavingsUSD != 5 {
+		t.Fatalf("unexpected infrastructure savings: %+v", result.MonthlyInfrastructureSavingsUSD)
+	}
+	if result.EstimatedNetMonthlySavingsUSD == nil || *result.EstimatedNetMonthlySavingsUSD != 4 {
+		t.Fatalf("unexpected net monthly savings: %+v", result.EstimatedNetMonthlySavingsUSD)
+	}
+	if result.BreakEvenMonths == nil || *result.BreakEvenMonths != 250 {
+		t.Fatalf("unexpected break-even estimate: %+v", result.BreakEvenMonths)
+	}
+	if len(result.MissingInputs) != 0 || result.Type != "modeled_estimate" {
+		t.Fatalf("unexpected ROI result metadata: %+v", result)
+	}
+}
+
+func TestCalculateROIRetainsMissingAssumptionsInsteadOfInventingValues(t *testing.T) {
+	result, err := CalculateROI(ROIInputs{MonthlyOperations: floatPointer(1000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CurrentMonthlyCostUSD != nil || result.BreakEvenMonths != nil {
+		t.Fatal("incomplete inputs generated cost or break-even estimates")
+	}
+	if len(result.MissingInputs) != 6 {
+		t.Fatalf("expected six missing inputs, got %v", result.MissingInputs)
+	}
+}
+
+func TestCalculateROIRejectsInvalidInputsAndOverflow(t *testing.T) {
+	if _, err := CalculateROI(ROIInputs{MonthlyOperations: floatPointer(math.NaN())}); err == nil {
+		t.Fatal("NaN input was accepted")
+	}
+	if _, err := CalculateROI(ROIInputs{MonthlyOperations: floatPointer(0)}); err == nil {
+		t.Fatal("zero operations was accepted")
+	}
+	if _, err := CalculateROI(ROIInputs{
+		MonthlyOperations:              floatPointer(math.MaxFloat64),
+		BaselineCPUSecondsPerOperation: floatPointer(math.MaxFloat64),
+	}); err == nil {
+		t.Fatal("overflowing modeled CPU hours were accepted")
+	}
+}
+
+func floatPointer(value float64) *float64 {
+	return &value
 }

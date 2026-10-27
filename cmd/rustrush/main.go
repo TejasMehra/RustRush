@@ -38,6 +38,8 @@ func run(args []string) error {
 		return report(args[1:])
 	case "compare":
 		return compare(args[1:])
+	case "roi":
+		return roi(args[1:])
 	case "__workload":
 		return workload(args[1:])
 	case "__json-workload":
@@ -59,6 +61,7 @@ Usage:
   rustrush demo [--workload cpu|json|database-fixture] [--iterations N] [--repetitions N] [--out DIR]
   rustrush report <report.json>
   rustrush compare <report-a.json> <report-b.json>
+  rustrush roi [assumption flags]
 
 Commands:
   doctor    Check local toolchain availability
@@ -66,9 +69,10 @@ Commands:
   demo      Run a built-in CPU, JSON, or database-fixture workload
   report    Render a saved JSON report as Markdown
   compare   Compare measured throughput from two saved reports
+  roi       Model optional infrastructure and engineering cost assumptions
 
-The demo needs Go. If rustc is unavailable, it records the missing candidate
-and produces an INCONCLUSIVE report rather than inventing a comparison.`)
+The demo runs without rustc. If Rust is unavailable, it records the missing
+candidate and produces an INCONCLUSIVE report rather than inventing a comparison.`)
 }
 
 func doctor() error {
@@ -90,8 +94,12 @@ func analyze(args []string) error {
 	flags := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
-	if err := flags.Parse(args); err != nil {
+	help, err := parseFlags(flags, args)
+	if err != nil {
 		return err
+	}
+	if help {
+		return nil
 	}
 	root := "."
 	if flags.NArg() > 0 {
@@ -128,8 +136,12 @@ func demo(args []string) error {
 	repetitions := flags.Int("repetitions", rustrush.DefaultRepetitions, "measurement trials per implementation")
 	outDir := flags.String("out", "results", "directory for generated reports")
 	timeout := flags.Duration("timeout", 30*time.Second, "maximum time allowed for each workload process")
-	if err := flags.Parse(args); err != nil {
+	help, err := parseFlags(flags, args)
+	if err != nil {
 		return err
+	}
+	if help {
+		return nil
 	}
 	if flags.NArg() != 0 {
 		return errors.New("demo does not accept positional arguments")
@@ -195,12 +207,100 @@ func compare(args []string) error {
 	return nil
 }
 
+func roi(args []string) error {
+	flags := flag.NewFlagSet("roi", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	monthlyOperations := flags.Float64("monthly-operations", 0, "user-supplied operations per month")
+	baselineCPU := flags.Float64("baseline-cpu-seconds", 0, "user-supplied CPU seconds per baseline operation")
+	targetCPU := flags.Float64("target-cpu-seconds", 0, "user-supplied CPU seconds per target operation")
+	cpuPrice := flags.Float64("cpu-hour-price", 0, "user-supplied infrastructure price per CPU-hour in USD")
+	engineeringHours := flags.Float64("engineering-hours", 0, "estimated migration engineering hours")
+	engineeringRate := flags.Float64("engineering-hourly-cost", 0, "engineering cost per hour in USD")
+	maintenanceDelta := flags.Float64("monthly-maintenance-cost-delta", 0, "monthly target-minus-current maintenance cost in USD; may be negative")
+	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
+	help, err := parseFlags(flags, args)
+	if err != nil {
+		return err
+	}
+	if help {
+		return nil
+	}
+	if flags.NArg() != 0 {
+		return errors.New("roi does not accept positional arguments")
+	}
+	provided := make(map[string]bool)
+	flags.Visit(func(item *flag.Flag) {
+		provided[item.Name] = true
+	})
+	inputs := rustrush.ROIInputs{
+		MonthlyOperations:              optionalFloat(*monthlyOperations, provided["monthly-operations"]),
+		BaselineCPUSecondsPerOperation: optionalFloat(*baselineCPU, provided["baseline-cpu-seconds"]),
+		TargetCPUSecondsPerOperation:   optionalFloat(*targetCPU, provided["target-cpu-seconds"]),
+		CPUCostPerHourUSD:              optionalFloat(*cpuPrice, provided["cpu-hour-price"]),
+		EngineeringHours:               optionalFloat(*engineeringHours, provided["engineering-hours"]),
+		EngineeringCostPerHourUSD:      optionalFloat(*engineeringRate, provided["engineering-hourly-cost"]),
+		MonthlyMaintenanceCostDeltaUSD: optionalFloat(*maintenanceDelta, provided["monthly-maintenance-cost-delta"]),
+	}
+	result, err := rustrush.CalculateROI(inputs)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return rustrush.WriteJSON(os.Stdout, result)
+	}
+	fmt.Println("Modeled ROI estimate; all supplied values are assumptions, not benchmark measurements.")
+	printOptionalMoney("Current monthly infrastructure cost", result.CurrentMonthlyCostUSD)
+	printOptionalMoney("Target monthly infrastructure cost", result.TargetMonthlyCostUSD)
+	printOptionalMoney("Monthly infrastructure savings", result.MonthlyInfrastructureSavingsUSD)
+	printOptionalMoney("Estimated engineering cost", result.EstimatedEngineeringCostUSD)
+	printOptionalMoney("Estimated net monthly savings", result.EstimatedNetMonthlySavingsUSD)
+	if result.BreakEvenMonths != nil {
+		fmt.Printf("Estimated break-even: %.2f months\n", *result.BreakEvenMonths)
+	} else {
+		fmt.Println("Estimated break-even: not calculated")
+	}
+	if len(result.MissingInputs) > 0 {
+		fmt.Printf("Missing inputs: %v\n", result.MissingInputs)
+	}
+	for _, note := range result.Notes {
+		fmt.Printf("Note: %s\n", note)
+	}
+	return nil
+}
+
+func optionalFloat(value float64, provided bool) *float64 {
+	if !provided {
+		return nil
+	}
+	return &value
+}
+
+func printOptionalMoney(label string, value *float64) {
+	if value == nil {
+		fmt.Printf("%s: not calculated\n", label)
+		return
+	}
+	fmt.Printf("%s: $%.2f\n", label, *value)
+}
+
+func parseFlags(flags *flag.FlagSet, args []string) (bool, error) {
+	err := flags.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
+		return true, nil
+	}
+	return false, err
+}
+
 func workload(args []string) error {
 	flags := flag.NewFlagSet("__workload", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	iterations := flags.Uint64("iterations", 0, "number of deterministic workload iterations")
-	if err := flags.Parse(args); err != nil {
+	help, err := parseFlags(flags, args)
+	if err != nil {
 		return err
+	}
+	if help {
+		return nil
 	}
 	if *iterations == 0 {
 		return errors.New("iterations must be positive")
@@ -214,8 +314,12 @@ func jsonWorkload(args []string) error {
 	flags.SetOutput(os.Stderr)
 	fixture := flags.String("fixture", "", "path to the JSON fixture")
 	iterations := flags.Uint64("iterations", 0, "number of JSON transformations")
-	if err := flags.Parse(args); err != nil {
+	help, err := parseFlags(flags, args)
+	if err != nil {
 		return err
+	}
+	if help {
+		return nil
 	}
 	if *fixture == "" || *iterations == 0 {
 		return errors.New("fixture path and positive iterations are required")
@@ -233,8 +337,12 @@ func databaseFixture(args []string) error {
 	flags.SetOutput(os.Stderr)
 	fixture := flags.String("fixture", "", "path to the local CSV fixture")
 	iterations := flags.Uint64("iterations", 0, "number of filter-and-aggregate iterations")
-	if err := flags.Parse(args); err != nil {
+	help, err := parseFlags(flags, args)
+	if err != nil {
 		return err
+	}
+	if help {
+		return nil
 	}
 	if *fixture == "" || *iterations == 0 {
 		return errors.New("fixture path and positive iterations are required")

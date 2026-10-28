@@ -64,6 +64,8 @@ jobs:
                 and (. as $measurement | all($measurement.samples[]; .output == $measurement.correctness_output))
               )
             ' "$output/latest.json"
+            grep -q "$(jq -r .verdict "$output/latest.json")" "$output/latest.svg"
+            python3 -c "import sys,xml.dom.minidom as m; m.parse(sys.argv[1])" "$output/latest.svg"
           done
       - name: Candidate workflow with Go baseline and Rust candidate
         shell: bash

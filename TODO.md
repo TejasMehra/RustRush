@@ -21,6 +21,7 @@ This status describes the checked-in implementation; items marked planned are no
 - [x] Optional ROI calculator with explicit user assumptions, missing-input reporting, and break-even estimates.
 - [x] `candidate --isolation container`: fail-closed hardened Docker runner (no network, dropped capabilities, read-only filesystem, non-root, resource limits, sanitized env, no Docker socket). Failure paths and flags unit-tested; runtime behaviour probed in the hosted CI `container-isolation` job. Not a VM-grade boundary; Docker Desktop untested.
 - [x] ROI: migration cost input, report linkage (`roi --report`, estimate labeled, blocked for INCONCLUSIVE reports) and scenario sensitivity (`--scenarios`), with unit tests for zero/negative/NaN/Inf inputs.
+- [x] Report quality: `latest.svg` shareable card generated only from measured values (well-formedness, XML-escaping and missing-data tests), Markdown Uncertainty and ROI-pointer sections. SVG rendering has not been reviewed visually in a browser.
 - [x] Deterministic tests for benchmark aggregation, paired ordering, correctness gates, failed candidates, timeouts, report output, and invalid evidence.
 - [x] Unit tests for analysis exclusions, report validation, and comparison guards.
 - [x] Unit tests for ROI arithmetic, missing inputs, invalid values, and numeric overflow.

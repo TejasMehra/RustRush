@@ -94,7 +94,7 @@ go run ./cmd/rustrush demo --workload database-fixture --iterations 1000
 go run ./cmd/rustrush roi --monthly-operations 3600000 --baseline-cpu-seconds 0.001 --target-cpu-seconds 0.0005 --cpu-hour-price 10 --engineering-hours 10 --engineering-hourly-cost 100 --monthly-maintenance-cost-delta 1
 ```
 
-The demo writes `results/latest.json` and `results/latest.md`. To adjust its workload:
+The demo writes `results/latest.json`, `results/latest.md` and a shareable `results/latest.svg` card (verdict, correctness status, measured p50/p95/p99/throughput/CV per implementation, hardware and runtime metadata; implementations that could not be measured show `n/a`, never zero). The Markdown report also has an Uncertainty section (trials, min/median/max, CV against the 10% threshold; no confidence intervals are computed) and points to `roi --report` for cost assumptions. The SVG is verified by unit tests (well-formed XML, escaping, missing-data handling) and a CI well-formedness check, but has not been visually reviewed in multiple viewers. To adjust its workload:
 
 ```powershell
 go run ./cmd/rustrush demo --iterations 5000000 --repetitions 7 --timeout 30s

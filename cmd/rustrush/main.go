@@ -225,8 +225,8 @@ func candidate(args []string) error {
 		return err
 	}
 	fmt.Print(rustrush.RenderMarkdown(report))
-	fmt.Printf("\nReports written to %s and %s\n",
-		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"))
+	fmt.Printf("\nReports written to %s, %s and %s\n",
+		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"), filepath.Join(*outDir, "latest.svg"))
 	if report.Verdict == rustrush.VerdictInconclusive {
 		fmt.Println("The comparison is inconclusive; see limitations in the report.")
 	}
@@ -276,8 +276,8 @@ func demo(args []string) error {
 		return err
 	}
 	fmt.Print(rustrush.RenderMarkdown(report))
-	fmt.Printf("\nReports written to %s and %s\n",
-		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"))
+	fmt.Printf("\nReports written to %s, %s and %s\n",
+		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"), filepath.Join(*outDir, "latest.svg"))
 	if report.Verdict == rustrush.VerdictInconclusive {
 		fmt.Println("The comparison is inconclusive; see limitations in the report.")
 	}

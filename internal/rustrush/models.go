@@ -211,6 +211,9 @@ func WriteReport(directory string, report Report) error {
 	if err := os.WriteFile(markdownPath, []byte(RenderMarkdown(report)), 0o644); err != nil {
 		return fmt.Errorf("write Markdown report: %w", err)
 	}
+	if err := os.WriteFile(filepath.Join(directory, "latest.svg"), []byte(RenderSVG(report)), 0o644); err != nil {
+		return fmt.Errorf("write SVG report: %w", err)
+	}
 	return nil
 }
 
@@ -246,6 +249,7 @@ func RenderMarkdown(report Report) string {
 		out += fmt.Sprintf("\n**Measured throughput delta** (Rust candidate vs Go baseline): %+.2f ops/s (%+.2f%%).\n",
 			*report.ThroughputDeltaOpsPerSec, *report.ThroughputDeltaPercent)
 	}
+	out += uncertaintySection(report)
 	if len(report.Environment) > 0 {
 		out += "\n## Machine and runtime metadata\n\n| Property | Value |\n|---|---|\n"
 		for _, key := range sortedKeys(report.Environment) {
@@ -253,6 +257,8 @@ func RenderMarkdown(report Report) string {
 		}
 	}
 	out += "\n## Rationale\n\n" + report.Reason + "\n"
+	out += "\n## ROI\n\nNo ROI is embedded in this report. Cost and savings figures require user-supplied assumptions: run `rustrush roi --report <this latest.json> ...`, which labels any value derived from this report as an estimate and returns no savings claim when this report is inconclusive.\n"
+	out += "\nA shareable summary card is written next to this file as `latest.svg`.\n"
 	if len(report.Limitations) > 0 {
 		out += "\n## Limitations\n"
 		for _, limitation := range report.Limitations {

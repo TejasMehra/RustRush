@@ -63,7 +63,7 @@ Usage:
   rustrush doctor
   rustrush analyze [path]
   rustrush guide [--json] [path]
-  rustrush candidate --baseline DIR --candidate FILE.rs [--input FILE] --allow-execute [--iterations N] [--repetitions N] [--timeout D] [--out DIR]
+  rustrush candidate --baseline DIR --candidate FILE.rs [--input FILE] --allow-execute [--isolation process|container] [--iterations N] [--repetitions N] [--timeout D] [--out DIR]
   rustrush demo [--workload cpu|json|database-fixture] [--iterations N] [--repetitions N] [--out DIR]
   rustrush report <report.json>
   rustrush compare <report-a.json> <report-b.json>
@@ -196,6 +196,12 @@ func candidate(args []string) error {
 	timeout := flags.Duration("timeout", 30*time.Second, "maximum time for each build and each process run")
 	outDir := flags.String("out", "results", "directory for generated reports")
 	allow := flags.Bool("allow-execute", false, "consent to building and running the supplied programs locally")
+	isolation := flags.String("isolation", rustrush.IsolationProcess, "process (timeout + minimal environment, not a sandbox) or container (hardened Docker; fails closed)")
+	goImage := flags.String("container-go-image", rustrush.DefaultContainerGoImage, "local Docker image with the Go toolchain (never pulled implicitly)")
+	rustImage := flags.String("container-rust-image", rustrush.DefaultContainerRustImage, "local Docker image with rustc (never pulled implicitly)")
+	memory := flags.String("container-memory", rustrush.DefaultContainerMemory, "container memory limit, e.g. 512m or 1g")
+	cpus := flags.String("container-cpus", rustrush.DefaultContainerCPUs, "container CPU limit")
+	pids := flags.Int("container-pids", rustrush.DefaultContainerPids, "container process limit")
 	help, err := parseFlags(flags, args)
 	if err != nil {
 		return err
@@ -209,6 +215,8 @@ func candidate(args []string) error {
 	report, err := rustrush.RunCandidate(context.Background(), rustrush.CandidateOptions{
 		BaselineDir: *baseline, CandidateFile: *source, InputFile: *input,
 		Iterations: *iterations, Repetitions: *repetitions, Timeout: *timeout, AllowExecute: *allow,
+		Isolation: *isolation,
+		Container: rustrush.ContainerConfig{GoImage: *goImage, RustImage: *rustImage, Memory: *memory, CPUs: *cpus, PidsLimit: *pids},
 	})
 	if err != nil {
 		return err

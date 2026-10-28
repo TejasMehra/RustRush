@@ -82,3 +82,43 @@ jobs:
             and ([.measurements[].correctness_output] | unique | length == 1)
             and all(.measurements[]; .status == "measured" and .error_count == 0 and (.samples | length) == 3)
           ' "$output/latest.json"
+
+  container-isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+      - name: Pull toolchain images (the tool itself never pulls)
+        run: |
+          docker pull golang:1.24
+          docker pull rust:1
+      - name: Runtime isolation probe
+        run: RUSTRUSH_CONTAINER_TESTS=1 go test -count=1 -v -run TestContainerIsolationProbe ./internal/rustrush
+      - name: Candidate workflow in hardened containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/rustrush-container"
+          go run ./cmd/rustrush candidate \
+            --baseline examples/candidate-template/baseline \
+            --candidate examples/candidate-template/candidate.rs \
+            --input examples/candidate-template/input.txt \
+            --iterations 10000 --repetitions 3 --allow-execute \
+            --isolation container --out "$output"
+          jq -e '
+            .correctness == "PASSED_FOR_CHECKSUM"
+            and (.environment.isolation | startswith("container"))
+            and all(.measurements[]; .status == "measured" and .error_count == 0)
+          ' "$output/latest.json"
+      - name: Daemon-unavailable path fails closed
+        shell: bash
+        run: |
+          if DOCKER_HOST=unix:///nonexistent.sock go run ./cmd/rustrush candidate \
+            --baseline examples/candidate-template/baseline \
+            --candidate examples/candidate-template/candidate.rs \
+            --iterations 1000 --allow-execute --isolation container --out "$RUNNER_TEMP/none"; then
+            echo "expected failure"; exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/none/latest.json"

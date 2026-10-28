@@ -38,17 +38,22 @@ type CandidateOptions struct {
 	Timeout       time.Duration
 	// AllowExecute is explicit consent to build and run the supplied programs.
 	AllowExecute bool
+	// Isolation is "process" (default; a timeout and minimal environment, not a
+	// sandbox) or "container" (hardened Docker run; fails closed if unavailable).
+	Isolation string
+	Container ContainerConfig
 
-	runProcess processRunner
-	build      buildRunner
-	lookPath   func(string) (string, error)
+	runProcess    processRunner
+	build         buildRunner
+	lookPath      func(string) (string, error)
+	containerExec containerExecFn
 }
 
 // RunCandidate benchmarks a user-supplied Go main package against a user-supplied
 // single-file Rust candidate. Sources are copied; the originals are never modified.
 func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error) {
 	if !options.AllowExecute {
-		return Report{}, errors.New("refusing to build and run supplied programs without --allow-execute; review the code first, since this is process isolation with a timeout and minimal environment, not a sandbox")
+		return Report{}, errors.New("refusing to build and run supplied programs without --allow-execute; review the code first, since the default process-level isolation is a timeout and minimal environment, not a sandbox (see --isolation container)")
 	}
 	if options.Iterations == 0 || options.Repetitions < 3 || options.Repetitions > 100 {
 		return Report{}, errors.New("iterations must be positive and repetitions must be between 3 and 100")
@@ -79,9 +84,21 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	if build == nil {
 		build = runBuild
 	}
-	goTool, err := lookPath("go")
-	if err != nil {
-		return Report{}, errors.New("the go tool was not found on PATH; it is required to build the baseline")
+	goTool := "go"
+	var engine *containerEngine
+	switch options.Isolation {
+	case "", IsolationProcess:
+		goTool, err = lookPath("go")
+		if err != nil {
+			return Report{}, errors.New("the go tool was not found on PATH; it is required to build the baseline")
+		}
+	case IsolationContainer:
+		engine, err = newContainerEngine(ctx, options.Container, options.lookPath, options.containerExec)
+		if err != nil {
+			return Report{}, err
+		}
+	default:
+		return Report{}, fmt.Errorf("unsupported isolation mode %q; choose process or container", options.Isolation)
 	}
 
 	tempDir, err := os.MkdirTemp("", "rustrush-candidate-*")
@@ -117,7 +134,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	}
 
 	suffix := ""
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && engine == nil {
 		suffix = ".exe"
 	}
 	baselineExe := filepath.Join(binDir, "baseline"+suffix)
@@ -127,6 +144,9 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			{tempDir, "[temporary directory]"}, {filepath.ToSlash(tempDir), "[temporary directory]"},
 			{goTool, "[go]"},
 		} {
+			if pair[0] == "go" {
+				continue
+			}
 			text = redactPath(text, pair[0], pair[1])
 		}
 		return strings.TrimSpace(text)
@@ -158,12 +178,39 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			"warmup_runs":   "1 per implementation",
 			"trial_order":   "alternating Go/Rust then Rust/Go, starting with Go",
 			"go_build":      "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built from a temporary copy",
-			"isolation":     "source copies, empty working directory, minimal environment, per-run timeout; not a sandbox",
+			"isolation":     "process-level isolation: source copies, empty working directory, minimal environment, per-run timeout; not a sandbox",
 		},
 	}
 	runOptions := DemoOptions{
 		Iterations: options.Iterations, Repetitions: options.Repetitions, Timeout: options.Timeout,
 		SourceRoot: workDir, runProcess: options.runProcess,
+	}
+	if engine != nil {
+		for key, value := range engine.metadata() {
+			report.Environment[key] = value
+		}
+		report.Assumptions["isolation"] = "container (docker): " + report.Environment["container_limits"] + ", no network, read-only root filesystem, read-only source/binary mounts, all capabilities dropped, no-new-privileges, non-root user, empty environment; images are never pulled implicitly"
+		report.Assumptions["go_build"] = "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built inside the Go container from a read-only copy"
+		report.Limitations = append(report.Limitations,
+			"Container isolation shares the host kernel and depends on the container runtime; it has not been independently validated as a security boundary. Do not run untrusted code on a machine you cannot afford to compromise.",
+			"Each sample includes container start-up time, applied equally to both implementations; short workloads are dominated by it, so use large iteration counts.",
+			"The baseline runs in the Go image and the candidate in the Rust image; differences between the images are part of the measurement.")
+		if runOptions.runProcess == nil {
+			inputDir := ""
+			if inputName != "" {
+				inputDir = filepath.Join(tempDir, "input")
+			}
+			runOptions.runProcess = engine.runner(binDir, inputDir)
+		}
+		build = func(ctx context.Context, tool string, args []string, dir string, _ []string) (string, error) {
+			if tool == "go" {
+				return engine.buildGo(ctx, dir, binDir)
+			}
+			return engine.buildRust(ctx, dir, binDir)
+		}
+		lookPath = func(name string) (string, error) { return name, nil }
+	} else {
+		report.Environment["isolation"] = "process (timeout and minimal environment only; not a sandbox)"
 	}
 	notRun := func(name, status, message string, count int) Measurement {
 		return Measurement{Name: name, Status: status, Iterations: options.Iterations, Samples: []Sample{}, ErrorCount: count, Error: message}
@@ -199,7 +246,9 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		return report, nil
 	}
 	report.Environment["rustc_flags"] = "--edition=2021 -C opt-level=3"
-	if options.build == nil {
+	if engine != nil {
+		report.Environment["rustc"] = engine.rustVersion(buildCtx)
+	} else if options.build == nil {
 		if version, err := exec.CommandContext(ctx, rustc, "--version").Output(); err == nil {
 			report.Environment["rustc"] = strings.TrimSpace(string(version))
 		}

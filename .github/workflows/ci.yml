@@ -121,6 +121,9 @@ jobs:
           jq -e '
             .correctness == "PASSED_FOR_CHECKSUM"
             and (.environment.isolation | startswith("container"))
+            and .environment.timing_mode == "steady_state_in_container"
+            and (.environment.container_startup_ms | contains("excluded from samples"))
+            and (.environment.container_exec_dispatch_ms_median | length > 0)
             and all(.measurements[]; .status == "measured" and .error_count == 0)
           ' "$output/latest.json"
       - name: Daemon-unavailable path fails closed

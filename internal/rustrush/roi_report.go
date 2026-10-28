@@ -3,6 +3,7 @@ package rustrush
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const (
@@ -86,7 +87,7 @@ func reportWallClockRatio(report Report) (*ROIReportLink, float64, bool) {
 	normalizeReportEvidence(&report)
 	link := &ROIReportLink{
 		Verdict: report.Verdict, Correctness: report.Correctness,
-		ProcessWallClockMsg: "Ratio of median whole-process wall-clock durations; a proxy for CPU-time ratio, not a CPU measurement.",
+		ProcessWallClockMsg: "Ratio of median process durations (" + timingMode(report) + "); a proxy for CPU-time ratio, not a CPU measurement. It carries no confidence interval.",
 	}
 	var baseline, candidate Measurement
 	for _, measurement := range report.Measurements {
@@ -138,7 +139,7 @@ func AnalyzeROI(inputs ROIInputs, report *Report, scenarios []ROIScenario) (ROIA
 			effective.TargetCPUSecondsPerOperation = &target
 			analysis.TargetSource = TargetSourceReportEstimate
 			analysis.Notes = append(analysis.Notes,
-				"Target CPU seconds per operation is an estimate (overrides the note above that nothing is inferred from timings): baseline CPU seconds x measured candidate/baseline wall-clock ratio.")
+				"Target CPU seconds per operation is an estimate: user-supplied baseline CPU seconds x the measured candidate/baseline median-duration ratio. The ratio is measured; the CPU conversion is an assumption.")
 		}
 	}
 	if effective.TargetCPUSecondsPerOperation != nil && analysis.TargetSource == TargetSourceUnavailable {
@@ -157,12 +158,23 @@ func AnalyzeROI(inputs ROIInputs, report *Report, scenarios []ROIScenario) (ROIA
 	if err != nil {
 		return ROIAnalysis{}, err
 	}
+	if analysis.TargetSource == TargetSourceReportEstimate {
+		kept := result.Notes[:0:0]
+		for _, note := range result.Notes {
+			if !strings.Contains(note, "none is inferred from benchmark") {
+				kept = append(kept, note)
+			}
+		}
+		result.Notes = kept
+	}
 	analysis.Result = result
 	if result.MonthlyInfrastructureSavingsUSD == nil {
 		analysis.Notes = append(analysis.Notes, "Savings are not claimed because required inputs are missing.")
 		return analysis, nil
 	}
 	analysis.Claim = claimFor(result.EstimatedNetMonthlySavingsUSD, *result.MonthlyInfrastructureSavingsUSD)
+	analysis.Notes = append(analysis.Notes,
+		"A MODELED_* claim is arithmetic on the stated assumptions, not a measured or guaranteed saving, and carries no statistical confidence. Scenario multipliers are illustrative, not forecasts.")
 
 	for _, scenario := range scenarios {
 		item, err := runScenario(effective, scenario)

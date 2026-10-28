@@ -220,3 +220,20 @@ func TestAnalyzeROIRejectsInvalidInputs(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestROIReportEstimateNotesAreConsistent(t *testing.T) {
+	report := roiReport([]uint64{2_000_000, 2_000_000, 2_000_000}, []uint64{1_000_000, 1_000_000, 1_000_000})
+	report.Verdict = VerdictPort
+	baseline, price, volume := 0.01, 0.05, 1_000_000.0
+	analysis, err := AnalyzeROI(ROIInputs{BaselineCPUSecondsPerOperation: &baseline, CPUCostPerHourUSD: &price, MonthlyOperations: &volume}, &report, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(append(append([]string{}, analysis.Notes...), analysis.Result.Notes...), "\n")
+	if strings.Contains(joined, "none is inferred from benchmark") || strings.Contains(joined, "overrides the note above") {
+		t.Fatalf("contradictory notes:\n%s", joined)
+	}
+	if !strings.Contains(joined, "no statistical confidence") {
+		t.Fatalf("missing confidence caveat:\n%s", joined)
+	}
+}

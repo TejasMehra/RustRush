@@ -111,7 +111,11 @@ func RenderSVG(report Report) string {
 	fmt.Fprintf(&out, `<rect x="24" y="52" width="190" height="28" rx="6" fill="%s"/><text x="36" y="71" class="badge">%s</text>`+"\n", verdictColor(report.Verdict), svgText(string(report.Verdict)))
 	fmt.Fprintf(&out, `<text x="230" y="71" class="value">Correctness gate: %s</text>`+"\n", svgText(report.Correctness))
 	fmt.Fprintf(&out, `<text x="24" y="104" class="muted">Workload: %s · %d iterations per process</text>`+"\n", svgText(truncateText(report.Workload, 80)), report.Iterations)
-	fmt.Fprintf(&out, `<text x="24" y="124" class="muted">Median whole-process wall-clock time per run (shorter is faster); all values measured in this run.</text>`+"\n")
+	scope := "Median whole-process wall-clock time per run (includes process start-up)"
+	if timingMode(report) == TimingSteadyState {
+		scope = "Median in-container process time per run, excluding container start-up"
+	}
+	fmt.Fprintf(&out, `<text x="24" y="124" class="muted">%s (shorter is faster); measured in this run.</text>`+"\n", svgText(scope))
 	for _, row := range rows {
 		out.WriteString(row + "\n")
 	}

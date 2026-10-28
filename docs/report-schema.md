@@ -18,3 +18,5 @@ RustRush writes UTF-8 JSON with a top-level `schema_version` of `"1.1"`. The CLI
 | `assumptions` | Process timing scope and warm-up information |
 
 The latency percentiles are process-level observations, not request-level percentiles. Error counts describe failed or correctness-invalid benchmark attempts. Unavailable, not-run, incomplete, failed, timed-out, and correctness-failed measurements are represented by status and error fields; absent values are not replaced with invented numbers. For legacy `1.0` reports, the reader infers the prior implementation's single warm-up and correctness output for successful measurements and one error for failed/build-failed measurements. The schema is a local experimental format and is not yet a public interchange or leaderboard contract.
+
+`environment.timing_mode` (additive, schema stays 1.1) is `process_end_to_end` or `steady_state_in_container`; absent means `process_end_to_end`. Container reports also carry `container_startup_ms`, `container_exec_dispatch_ms_median` and `timing_resolution` describing overheads excluded from samples.

@@ -3,6 +3,7 @@ package rustrush
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,12 +115,25 @@ type fakeDocker struct {
 	daemonErr error
 	missing   string
 	hang      bool
+	// execFailOn fails docker exec calls whose arguments contain this text.
+	execFailOn string
+	// noTiming makes exec omit the in-container timing marker.
+	noTiming bool
+	// zeroTiming makes exec report a zero-length interval.
+	zeroTiming bool
+	// delay is real time spent in every run/exec call; it must never appear in samples.
+	delay    time.Duration
+	execs    int
+	timingNS []uint64
 }
 
 func (f *fakeDocker) exec(ctx context.Context, args []string) (string, string, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, append([]string(nil), args...))
 	f.mu.Unlock()
+	if f.delay > 0 && (args[0] == "run" || args[0] == "exec") {
+		time.Sleep(f.delay)
+	}
 	switch args[0] {
 	case "version":
 		if f.daemonErr != nil {
@@ -133,6 +147,26 @@ func (f *fakeDocker) exec(ctx context.Context, args []string) (string, string, e
 		return "sha256:abc\n", "", nil
 	case "rm":
 		return "", "", nil
+	case "exec":
+		joined := strings.Join(args, " ")
+		if f.execFailOn != "" && strings.Contains(joined, f.execFailOn) {
+			return "", "boom", errors.New("exit status 1")
+		}
+		f.mu.Lock()
+		f.execs++
+		n := f.execs
+		f.mu.Unlock()
+		switch {
+		case f.noTiming:
+			return "42\n", "", nil
+		case f.zeroTiming:
+			return "42\n\nRUSTRUSH_NS=0\n", "", nil
+		}
+		ns := uint64(1_000_000 + n*1000)
+		f.mu.Lock()
+		f.timingNS = append(f.timingNS, ns)
+		f.mu.Unlock()
+		return fmt.Sprintf("42\n\nRUSTRUSH_NS=%d\n", ns), "", nil
 	case "run":
 		if f.hang {
 			<-ctx.Done()
@@ -145,26 +179,22 @@ func (f *fakeDocker) exec(ctx context.Context, args []string) (string, string, e
 		if strings.Contains(joined, "rustc --version") {
 			return "rustc 1.80.0\n", "", nil
 		}
-		if strings.Contains(joined, "/rr/bin/") {
-			return "42\n", "", nil
-		}
 		return "", "", nil
 	}
 	return "", "", errors.New("unexpected docker call")
 }
 
-func (f *fakeDocker) runCalls() [][]string {
+func (f *fakeDocker) callsNamed(name string) [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var result [][]string
 	for _, call := range f.calls {
-		if call[0] == "run" {
+		if call[0] == name {
 			result = append(result, call)
 		}
 	}
 	return result
 }
-
 func TestNewContainerEngineFailsClosed(t *testing.T) {
 	skipIfRoot(t)
 	ctx := context.Background()
@@ -228,9 +258,9 @@ func TestRunCandidateContainerModeUsesHardenedContainers(t *testing.T) {
 		!strings.Contains(report.Environment["container_go_image"], "sha256:abc") {
 		t.Fatalf("isolation metadata missing: %v", report.Environment)
 	}
-	runs := docker.runCalls()
-	// rustc --version, 2 builds, 2 warm-ups, 6 timed runs
-	if len(runs) != 1+2+2+6 {
+	runs := docker.callsNamed("run")
+	// rustc --version, 2 builds, 2 detached session containers
+	if len(runs) != 1+2+2 {
 		t.Fatalf("unexpected container count %d", len(runs))
 	}
 	for _, args := range runs {
@@ -244,9 +274,38 @@ func TestRunCandidateContainerModeUsesHardenedContainers(t *testing.T) {
 			t.Fatalf("original paths or privileges leaked into %s", joined)
 		}
 	}
-	last := strings.Join(runs[len(runs)-1], " ")
-	if !strings.Contains(last, "--input /rr/input/input.txt") {
-		t.Fatalf("input path was not translated: %s", last)
+	execs := docker.callsNamed("exec")
+	if len(execs) != 2+6 {
+		t.Fatalf("expected 2 warm-ups and 6 timed execs, got %d", len(execs))
+	}
+	if !strings.Contains(strings.Join(execs[len(execs)-1], " "), "--input /rr/input/input.txt") {
+		t.Fatalf("input path was not translated: %v", execs[len(execs)-1])
+	}
+	if removed := docker.callsNamed("rm"); len(removed) < 2 {
+		t.Fatalf("session containers must be removed, got %v", removed)
+	}
+	if report.Environment["timing_mode"] != TimingSteadyState {
+		t.Fatalf("timing mode: %v", report.Environment)
+	}
+	for _, key := range []string{"container_startup_ms", "timing_resolution"} {
+		if report.Environment[key] == "" {
+			t.Fatalf("missing %s: %v", key, report.Environment)
+		}
+	}
+	// Samples must equal the in-container markers exactly: the fake sleeps on
+	// every run/exec, so host wall-clock, start-up and build time are not in them.
+	want := map[int64]bool{}
+	docker.mu.Lock()
+	for _, ns := range docker.timingNS {
+		want[int64(ns)] = true
+	}
+	docker.mu.Unlock()
+	for _, m := range report.Measurements {
+		for _, sample := range m.Samples {
+			if !want[int64(sample.DurationNS)] {
+				t.Fatalf("sample %d is not an in-container timing", sample.DurationNS)
+			}
+		}
 	}
 	after := hashTree(t, filepath.Dir(f.candidate))
 	for path, sum := range before {
@@ -336,5 +395,84 @@ echo "sock=$(ls /var/run/docker.sock 2>/dev/null | wc -l)"
 		if !strings.Contains(stdout, want) {
 			t.Errorf("expected %q in probe output:\n%s", want, stdout)
 		}
+	}
+}
+
+func containerRun(t *testing.T, docker *fakeDocker) Report {
+	t.Helper()
+	f := newCandidateFixture(t)
+	options := f.options()
+	options.Isolation = IsolationContainer
+	options.containerExec = docker.exec
+	report, err := RunCandidate(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
+}
+
+func TestSteadyStateSamplesExcludeHostOverhead(t *testing.T) {
+	skipIfRoot(t)
+	docker := &fakeDocker{delay: 20 * time.Millisecond}
+	report := containerRun(t, docker)
+	if report.Environment["container_exec_dispatch_ms_median"] == "" {
+		t.Fatalf("dispatch overhead not recorded separately: %v", report.Environment)
+	}
+	for _, m := range report.Measurements {
+		for _, sample := range m.Samples {
+			if time.Duration(sample.DurationNS) > 10*time.Millisecond {
+				t.Fatalf("sample %d ns includes host-side delay", sample.DurationNS)
+			}
+		}
+	}
+}
+
+func TestContainerExecFailureInvalidatesComparison(t *testing.T) {
+	skipIfRoot(t)
+	report := containerRun(t, &fakeDocker{execFailOn: "/rr/bin/candidate"})
+	if report.Verdict != VerdictInconclusive {
+		t.Fatalf("verdict %s", report.Verdict)
+	}
+}
+
+func TestMissingOrZeroTimingIsInconclusive(t *testing.T) {
+	skipIfRoot(t)
+	for _, docker := range []*fakeDocker{{noTiming: true}, {zeroTiming: true}} {
+		report := containerRun(t, docker)
+		if report.Verdict != VerdictInconclusive {
+			t.Fatalf("verdict %s for %+v", report.Verdict, docker)
+		}
+	}
+}
+
+func TestSessionStartFailureIsInconclusiveAndCleansUp(t *testing.T) {
+	skipIfRoot(t)
+	docker := &fakeDocker{failOn: "sleep"}
+	report := containerRun(t, docker)
+	if report.Verdict != VerdictInconclusive || report.Measurements[0].ErrorCount == 0 {
+		t.Fatalf("unexpected: %+v", report)
+	}
+	if len(docker.callsNamed("exec")) != 0 {
+		t.Fatal("nothing may be timed without a session")
+	}
+}
+
+func TestParseTimedOutput(t *testing.T) {
+	out, ns, err := parseTimedOutput("hello\n\nRUSTRUSH_NS=1500\n")
+	if err != nil || ns != 1500 || out != "hello" {
+		t.Fatalf("got %q %d %v", out, ns, err)
+	}
+	for _, bad := range []string{"", "x\n", "x\nRUSTRUSH_NS=abc\n", "x\nRUSTRUSH_NS=0\n"} {
+		if _, _, err := parseTimedOutput(bad); err == nil {
+			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+}
+
+func TestCompareReportsRefusesMixedTimingModes(t *testing.T) {
+	a := Report{Environment: map[string]string{"timing_mode": TimingSteadyState}}
+	b := Report{Environment: map[string]string{}}
+	if got := CompareReports(a, b); !strings.Contains(got, "timing modes differ") {
+		t.Fatalf("mixed modes not refused: %s", got)
 	}
 }

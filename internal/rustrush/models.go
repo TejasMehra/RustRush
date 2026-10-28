@@ -219,8 +219,8 @@ func WriteReport(directory string, report Report) error {
 
 func RenderMarkdown(report Report) string {
 	normalizeReportEvidence(&report)
-	out := fmt.Sprintf("# RustRush benchmark report\n\n- **Schema:** %s\n- **Generated:** %s\n- **Project:** %s\n- **Component:** %s\n- **Verdict:** `%s`\n- **Correctness gate:** %s\n\n## Workload\n\n%s\n\nIterations per process: %d. Reproduction: `%s`.\n\nAll durations and throughput below are measured observations, not estimates. Latency percentiles are process wall-clock durations (startup, argument parsing, workload, and output capture), not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors.\n\n## Measurements\n\n| Implementation | Status | Trials | Warm-ups | Errors | Median/p50 (ms) | p95 (ms) | p99 (ms) | Ops/sec | CV |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
-		report.SchemaVersion, report.GeneratedAt.UTC().Format(time.RFC3339), report.Project, report.Component, report.Verdict, report.Correctness, report.Workload, report.Iterations, report.Reproduction)
+	out := fmt.Sprintf("# RustRush benchmark report\n\n- **Schema:** %s\n- **Generated:** %s\n- **Project:** %s\n- **Component:** %s\n- **Verdict:** `%s`\n- **Correctness gate:** %s\n\n## Workload\n\n%s\n\nIterations per process: %d. Reproduction: `%s`.\n\n%s\n\n## Measurements\n\n| Implementation | Status | Trials | Warm-ups | Errors | Median/p50 (ms) | p95 (ms) | p99 (ms) | Ops/sec | CV |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+		report.SchemaVersion, report.GeneratedAt.UTC().Format(time.RFC3339), report.Project, report.Component, report.Verdict, report.Correctness, report.Workload, report.Iterations, report.Reproduction, timingDescription(report))
 	sampleNotes := ""
 	for _, measurement := range report.Measurements {
 		if measurement.Status != "measured" || !validMeasurement(measurement) {
@@ -290,6 +290,9 @@ func CompareReports(first, second Report) string {
 	if first.Component != second.Component || first.Workload != second.Workload ||
 		first.Iterations != second.Iterations {
 		return out + "Comparison unavailable: component or workload definitions differ.\n"
+	}
+	if timingMode(first) != timingMode(second) {
+		return out + fmt.Sprintf("Comparison unavailable: timing modes differ (%s vs %s); steady-state and end-to-end timings are never mixed.\n", timingMode(first), timingMode(second))
 	}
 	if first.Correctness != "PASSED_FOR_CHECKSUM" || second.Correctness != "PASSED_FOR_CHECKSUM" {
 		return out + "Comparison unavailable: both reports must pass the correctness check.\n"
@@ -444,5 +447,22 @@ func environment() map[string]string {
 		"go_compiler":  runtime.Compiler,
 		"cpu_count":    fmt.Sprint(runtime.NumCPU()),
 		"go_max_procs": fmt.Sprint(runtime.GOMAXPROCS(0)),
+		"timing_mode":  TimingProcessEndToEnd,
 	}
+}
+
+// timingMode returns the recorded timing mode; reports that predate the field
+// were always process end-to-end timings.
+func timingMode(report Report) string {
+	if mode := report.Environment["timing_mode"]; mode != "" {
+		return mode
+	}
+	return TimingProcessEndToEnd
+}
+
+func timingDescription(report Report) string {
+	if timingMode(report) == TimingSteadyState {
+		return "All durations and throughput below are measured observations, not estimates. Timing mode: **steady state in container**. Each sample is the in-container wall-clock time of one workload process (1 microsecond resolution), taken after both containers were created and each implementation was warmed up; container creation/start-up, compilation and docker exec dispatch are excluded and listed under metadata. Percentiles are over repeated process durations, not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors."
+	}
+	return "All durations and throughput below are measured observations, not estimates. Timing mode: **process end-to-end**. Latency percentiles are process wall-clock durations (startup, argument parsing, workload, and output capture), not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors."
 }

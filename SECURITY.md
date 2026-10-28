@@ -21,3 +21,5 @@ The scanner uses filename and directory heuristics to avoid credentials; it is n
 ## Reporting
 
 Include the RustRush version, operating system, affected command, and a concise impact description. Do not include live credentials or private source code in the report.
+
+Container mode keeps one hardened container per implementation alive for the duration of the benchmark (`sleep 3600`, same flags: no network, read-only root, dropped capabilities, no-new-privileges, non-root, limits) and runs the workload through `docker exec`; both are force-removed when the run ends or times out. The Docker socket is never mounted. Executed workloads therefore share one container across repetitions, so state they write under `/tmp` can persist between runs.

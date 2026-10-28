@@ -185,22 +185,45 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		Iterations: options.Iterations, Repetitions: options.Repetitions, Timeout: options.Timeout,
 		SourceRoot: workDir, runProcess: options.runProcess,
 	}
+	startTiming := func(context.Context) (func(), error) { return func() {}, nil }
 	if engine != nil {
 		for key, value := range engine.metadata() {
 			report.Environment[key] = value
 		}
 		report.Assumptions["isolation"] = "container (docker): " + report.Environment["container_limits"] + ", no network, read-only root filesystem, read-only source/binary mounts, all capabilities dropped, no-new-privileges, non-root user, empty environment; images are never pulled implicitly"
 		report.Assumptions["go_build"] = "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built inside the Go container from a read-only copy"
-		report.Limitations = append(report.Limitations,
-			"Container isolation shares the host kernel and depends on the container runtime; it has not been independently validated as a security boundary. Do not run untrusted code on a machine you cannot afford to compromise.",
-			"Each sample includes container start-up time, applied equally to both implementations; short workloads are dominated by it, so use large iteration counts.",
-			"The baseline runs in the Go image and the candidate in the Rust image; differences between the images are part of the measurement.")
-		if runOptions.runProcess == nil {
-			inputDir := ""
-			if inputName != "" {
-				inputDir = filepath.Join(tempDir, "input")
+		var kept []string
+		for _, limitation := range report.Limitations {
+			if !strings.HasPrefix(limitation, "Process startup is included") {
+				kept = append(kept, limitation)
 			}
-			runOptions.runProcess = engine.runner(binDir, inputDir)
+		}
+		report.Limitations = append(kept,
+			"Container isolation shares the host kernel and depends on the container runtime; it has not been independently validated as a security boundary. Do not run untrusted code on a machine you cannot afford to compromise.",
+			"Samples are steady-state: the in-container wall-clock time of the workload process (bash fork/exec of the workload included, 1 microsecond resolution), measured after both containers were created and each implementation was warmed up. Container creation, image preparation, compilation and docker exec dispatch are excluded and recorded separately as metadata. This is not comparable with process_end_to_end reports.",
+			"The baseline runs in the Go image and the candidate in the Rust image; differences between the images are part of the measurement.")
+		report.Environment["timing_mode"] = TimingSteadyState
+		report.Assumptions["timing_scope"] = "in-container workload process wall-clock time (steady state); excludes container creation/start, compilation, and docker exec dispatch"
+		report.Assumptions["latency_scope"] = "one in-container process duration per repetition after one warm-up per implementation"
+		inputDir := ""
+		if inputName != "" {
+			inputDir = filepath.Join(tempDir, "input")
+		}
+		startTiming = func(ctx context.Context) (func(), error) {
+			if runOptions.runProcess != nil {
+				return func() {}, nil
+			}
+			session, err := engine.startSession(ctx, binDir, inputDir)
+			if err != nil {
+				return nil, err
+			}
+			runOptions.runProcess = session.runner()
+			return func() {
+				session.close()
+				for key, value := range session.metadata() {
+					report.Environment[key] = value
+				}
+			}, nil
 		}
 		build = func(ctx context.Context, tool string, args []string, dir string, _ []string) (string, error) {
 			if tool == "go" {
@@ -211,6 +234,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		lookPath = func(name string) (string, error) { return name, nil }
 	} else {
 		report.Environment["isolation"] = "process (timeout and minimal environment only; not a sandbox)"
+		report.Environment["timing_mode"] = TimingProcessEndToEnd
 	}
 	notRun := func(name, status, message string, count int) Measurement {
 		return Measurement{Name: name, Status: status, Iterations: options.Iterations, Samples: []Sample{}, ErrorCount: count, Error: message}
@@ -268,7 +292,19 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		return report, nil
 	}
 
+	stopTiming, prepareErr := startTiming(ctx)
+	if prepareErr != nil {
+		message := redact(prepareErr.Error())
+		report.Measurements = []Measurement{
+			{Name: "Go baseline", Status: "failed", Iterations: options.Iterations, Samples: []Sample{}, ErrorCount: 1, Error: message},
+			{Name: "Rust candidate", Status: "not_run", Iterations: options.Iterations, Samples: []Sample{}},
+		}
+		report.Reason = "The container measurement environment could not be prepared; no timings were collected."
+		report.Limitations = append(report.Limitations, "Failed environment preparation invalidates the comparison.")
+		return report, nil
+	}
 	baseline, candidate, correctnessPassed, pairErr := measurePair(ctx, runOptions, baselineExe, prefix, candidateExe, prefix)
+	stopTiming()
 	baseline.Error, candidate.Error = redact(baseline.Error), redact(candidate.Error)
 	report.Measurements = []Measurement{baseline, candidate}
 	switch {

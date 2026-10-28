@@ -102,7 +102,9 @@ type containerSpec struct {
 	Command []string
 	// TmpfsExec allows executing from /tmp; only builds need it.
 	TmpfsExec bool
-	Config    ContainerConfig
+	// Detach starts a long-lived container; used for steady-state measurement.
+	Detach bool
+	Config ContainerConfig
 }
 
 // containerArgs returns the docker CLI arguments for a hardened, network-less run.
@@ -124,8 +126,12 @@ func containerArgs(spec containerSpec) ([]string, error) {
 	if spec.TmpfsExec {
 		tmpfs = "/tmp:rw,nosuid,exec,size=512m"
 	}
-	args := []string{
-		"run", "--rm", "--name", spec.Name, "--pull", "never",
+	args := []string{"run"}
+	if spec.Detach {
+		args = append(args, "--detach")
+	}
+	args = append(args,
+		"--rm", "--name", spec.Name, "--pull", "never",
 		"--network", "none",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
@@ -137,7 +143,7 @@ func containerArgs(spec containerSpec) ([]string, error) {
 		"--ulimit", "nofile=1024:1024",
 		"--tmpfs", tmpfs,
 		"--workdir", spec.Workdir,
-	}
+	)
 	for _, mount := range spec.Mounts {
 		if !filepath.IsAbs(mount.Source) || strings.ContainsAny(mount.Source, ",\n\r\x00") {
 			return nil, fmt.Errorf("unsafe mount source %q", filepath.Base(mount.Source))
@@ -321,44 +327,6 @@ func (e *containerEngine) rustVersion(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(stdout)
-}
-
-// runner adapts the engine to the paired benchmark engine. Wall-clock time
-// includes container start-up, equally for both implementations.
-func (e *containerEngine) runner(binDir, inputDir string) processRunner {
-	return func(ctx context.Context, executable string, args []string, _ string, _ []string) (Sample, error) {
-		name := strings.TrimSuffix(filepath.Base(executable), ".exe")
-		image := e.config.RustImage
-		if name == "baseline" {
-			image = e.config.GoImage
-		} else if name != "candidate" {
-			return Sample{}, fmt.Errorf("unexpected executable %q for container runner", name)
-		}
-		mounts := []containerMount{{binDir, containerBin, true}}
-		translated := make([]string, len(args))
-		for i, arg := range args {
-			translated[i] = arg
-			if inputDir != "" && strings.HasPrefix(arg, inputDir) {
-				translated[i] = containerIn + "/" + filepath.Base(arg)
-			}
-		}
-		if inputDir != "" {
-			mounts = append(mounts, containerMount{inputDir, containerIn, true})
-		}
-		start := time.Now()
-		stdout, stderr, err := e.run(ctx, containerSpec{
-			Image: image, Workdir: "/tmp", Mounts: mounts,
-			Command: append([]string{containerBin + "/" + name}, translated...),
-		})
-		duration := time.Since(start)
-		if err != nil {
-			if ctx.Err() != nil {
-				return Sample{}, ctx.Err()
-			}
-			return Sample{}, fmt.Errorf("run workload in container: %w: %s", err, firstLine(stderr, nil))
-		}
-		return Sample{DurationNS: uint64(duration.Nanoseconds()), Output: strings.TrimSpace(stdout)}, nil
-	}
 }
 
 func (e *containerEngine) metadata() map[string]string {

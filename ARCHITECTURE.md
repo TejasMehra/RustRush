@@ -10,7 +10,7 @@ RustRush currently uses Go's standard library and has no third-party runtime dep
 - `internal/rustrush/json_workload.go` and `internal/rustrush/database_fixture.go` implement the Go baselines for the JSON fixture and CSV mock.
 - `internal/rustrush/models.go` defines the versioned report, percentile aggregation, validation, Markdown rendering, and comparison behavior.
 - `internal/rustrush/roi.go` calculates optional migration economics only from explicitly supplied assumptions; `roi_report.go` links a saved report (labeled estimate, blocked when inconclusive) and runs scenario sensitivity.
-- `internal/rustrush/container.go` is the optional fail-closed Docker runner for `candidate`; it plugs into the benchmark engine through the same process-runner hook as local execution.
+- `internal/rustrush/container.go` is the optional fail-closed Docker runner for `candidate`; it builds both toolchains in containers, then `container_session.go` starts two persistent hardened containers and plugs `docker exec` into the benchmark engine through the same process-runner hook as local execution. Samples are the in-container process duration (`steady_state_in_container`); start-up and dispatch overhead are recorded as metadata, and `compare` refuses to mix timing modes.
 - `internal/rustrush/toolchain.go` discovers local Go and Rust compiler availability.
 - `examples/cpu-heavy/candidate.rs` is the Rust implementation used by the local demo.
 

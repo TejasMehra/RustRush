@@ -92,3 +92,16 @@ func TestMarkdownUncertaintyWithoutMeasurementsInfersNothing(t *testing.T) {
 		t.Fatalf("unexpected:\n%s", markdown)
 	}
 }
+
+func TestRenderSVGCaptionMatchesTimingMode(t *testing.T) {
+	report := roiReport([]uint64{2_000_000, 2_000_000, 2_000_000}, []uint64{1_000_000, 1_000_000, 1_000_000})
+	report.Environment = map[string]string{"timing_mode": TimingSteadyState}
+	steady := RenderSVG(report)
+	if !strings.Contains(steady, "in-container process time") || strings.Contains(steady, "whole-process") {
+		t.Fatal("steady-state caption missing or mixed with end-to-end wording")
+	}
+	report.Environment = map[string]string{}
+	if end := RenderSVG(report); !strings.Contains(end, "whole-process wall-clock") || strings.Contains(end, "in-container") {
+		t.Fatal("end-to-end caption missing or mixed with steady-state wording")
+	}
+}

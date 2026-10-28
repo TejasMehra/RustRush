@@ -14,7 +14,7 @@ The Rust source is compiled with `rustc --edition=2021 -C opt-level=3`. Go uses 
 
 ## Statistics
 
-Raw nanosecond process durations and outputs are retained in JSON for each measured repetition, along with each implementation's correctness-probe output. Throughput is calculated as `iterations / median(process duration)`. p50, p95, and p99 use the nearest-rank method over trial durations; with five trials p95/p99 are effectively the maximum observation. These are whole-process latency percentiles (including startup, argument parsing, workload, and output capture), not request-level or per-operation latency distributions. Error counts report failed or correctness-invalid benchmark attempts; the harness does not issue multiple requests within one process.
+Raw nanosecond process durations and outputs are retained in JSON for each measured repetition, along with each implementation's correctness-probe output. Throughput is calculated as `iterations / median(process duration)`. p50, p95, and p99 use the nearest-rank method over trial durations; with five trials p95/p99 are effectively the maximum observation. These are process-duration percentiles (in the default `process_end_to_end` mode including startup, argument parsing, workload, and output capture), not request-level or per-operation latency distributions. Error counts report failed or correctness-invalid benchmark attempts; the harness does not issue multiple requests within one process.
 
 No speedup is preloaded. If Rust is unavailable, the report includes baseline observations only and marks the verdict inconclusive. Missing, invalid, failed, or timed-out measurements, correctness mismatches, and incomplete repetitions cannot produce a performance verdict. The verdict requires at least three valid paired trials and rejects a comparison when either implementation's population coefficient of variation exceeds 10%. A measured throughput change of at least +10% yields `PORT`, at least -10% yields `DONT_PORT`, and a smaller change yields `OPTIMIZE_FIRST`. These thresholds are simple screening rules, not a statistical guarantee. Invalid/noisy measurements remain labeled as observations in the raw report, but the aggregate throughput delta is omitted and the verdict is `INCONCLUSIVE`.
 
@@ -33,3 +33,10 @@ go run ./cmd/rustrush demo --iterations 2000000 --repetitions 5
 ```
 
 Use `--workload json` or `--workload database-fixture` to run the fixture examples. The JSON report retains raw timings and environment information. Do not compare results across different environments as a controlled experiment.
+
+## Timing modes
+
+- `process_end_to_end` (local runner): each sample is host-measured wall-clock time of one process launch.
+- `steady_state_in_container` (`--isolation container`): both containers are created first (resource limits identical, workload bind-mounted read-only), each implementation is warmed up with one run inside its running container, then paired repetitions run via `docker exec`. The sample is the in-container wall-clock of the workload process taken with bash `EPOCHREALTIME` (microsecond resolution; includes the bash fork/exec). Container creation/start-up, image preparation, compilation and `docker exec` dispatch are excluded and recorded as `container_startup_ms` and `container_exec_dispatch_ms_median`.
+
+The mode is recorded in `environment.timing_mode` (absent in older reports, meaning `process_end_to_end`). `compare` and ROI linkage never mix modes. A failed `docker exec`, a missing or zero in-container timing marker, or a failed environment start-up invalidates the comparison and yields `INCONCLUSIVE`. Remaining limits: baseline and candidate run in different images, containers share the host kernel, no confidence intervals are computed, and CPU/memory are not measured.

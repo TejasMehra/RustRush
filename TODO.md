@@ -19,6 +19,8 @@ This status describes the checked-in implementation; items marked planned are no
 - [x] Raw process timings, throughput, process p50/p95/p99, process error counts, metadata, and inconclusive handling for invalid, failed, missing, or noisy evidence.
 - [x] Versioned JSON plus measured-versus-estimated Markdown reporting, raw samples, and workload-compatible report comparison.
 - [x] Optional ROI calculator with explicit user assumptions, missing-input reporting, and break-even estimates.
+- [x] `candidate --isolation container`: fail-closed hardened Docker runner (no network, dropped capabilities, read-only filesystem, non-root, resource limits, sanitized env, no Docker socket). Failure paths and flags unit-tested; runtime behaviour probed in the hosted CI `container-isolation` job. Not a VM-grade boundary; Docker Desktop untested.
+- [x] ROI: migration cost input, report linkage (`roi --report`, estimate labeled, blocked for INCONCLUSIVE reports) and scenario sensitivity (`--scenarios`), with unit tests for zero/negative/NaN/Inf inputs.
 - [x] Deterministic tests for benchmark aggregation, paired ordering, correctness gates, failed candidates, timeouts, report output, and invalid evidence.
 - [x] Unit tests for analysis exclusions, report validation, and comparison guards.
 - [x] Unit tests for ROI arithmetic, missing inputs, invalid values, and numeric overflow.
@@ -28,12 +30,12 @@ This status describes the checked-in implementation; items marked planned are no
 ## Planned
 
 - [ ] Add and validate a real local database-backed example with shared fixtures and correctness tests.
-- [ ] Add OS-level or container isolation for `candidate` (currently timeout + minimal environment only) and non-Go baselines.
+- [ ] Add non-Go baselines, Podman/rootless-engine support, and a stronger boundary (gVisor/microVM) if untrusted code must be supported.
 - [ ] Add application-specific benchmark adapters beyond the `--iterations`/`--input` contract.
 - [ ] Add profiling adapters and richer evidence-based analysis.
-- [ ] Add sensitivity analysis and connect optional ROI assumptions to exported benchmark reports.
+- [ ] Embed ROI assumptions inside the exported benchmark report (currently `roi --report` reads a report; reports do not contain ROI).
 - [ ] Expand report validation, import/export, redaction regression tests, and confidence-interval/statistical reliability analysis.
 - [ ] Document supported compiler/platform combinations based on CI evidence.
 - [ ] Consider optional AI candidate generation only after explicit configuration and local workflow maturity.
 
-No production application profiling, candidate translation, resource measurements, ROI integration in benchmark reports, hosted service, or AI integration is currently implemented.
+No production application profiling, candidate translation, resource measurements, hosted service, or AI integration is currently implemented.

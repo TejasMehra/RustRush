@@ -61,7 +61,23 @@ Contract: both programs accept `--iterations N` (and `--input FILE` when you pas
 3. Rejects candidates using `include!`/`include_str!`/`include_bytes!`, `extern crate`, external `mod x;`, or linker attributes.
 4. Runs untimed correctness probes and times nothing unless outputs are identical, then uses the same paired benchmark engine and the same JSON/Markdown report format as the demo.
 
-This is not a sandbox: programs run with a timeout, a minimal environment, no shell, and an empty working directory, but with your user's permissions. Do not run code you do not trust. RustRush does not generate or translate code and does not upload anything.
+By default this is process-level isolation, not a sandbox: programs run with a timeout, a minimal environment, no shell, and an empty working directory, but with your user's permissions, filesystem and network. Do not run code you do not trust. RustRush does not generate or translate code and does not upload anything.
+
+### Optional container isolation
+
+```powershell
+docker pull golang:1.24; docker pull rust:1
+go run ./cmd/rustrush candidate --isolation container --allow-execute `
+  --baseline examples/candidate-template/baseline `
+  --candidate examples/candidate-template/candidate.rs `
+  --input examples/candidate-template/input.txt
+```
+
+`--isolation container` builds and runs both programs in hardened Docker containers: no network (`--network none`), all capabilities dropped, `no-new-privileges`, read-only root filesystem, read-only source/binary/input mounts, a small `noexec` tmpfs (executable only for builds), non-root user, memory/CPU/PID limits (`--container-memory`, `--container-cpus`, `--container-pids`), and a sanitized environment. The Docker socket is never mounted and nothing runs privileged. Images are never pulled implicitly.
+
+It fails closed: if the Docker CLI or daemon is missing, an image is not present locally, the host user is root, or a setting is invalid, the command exits with an error and does **not** fall back to local execution (no report is written).
+
+Verification status: the hardening flags and failure paths are unit-tested with an injected Docker executor, and the hosted CI `container-isolation` job runs a probe inside a real container (non-root, no network interfaces beyond loopback, zero effective capabilities, no-new-privileges, read-only root and mounts, no host environment or Docker socket visible) plus a full `candidate --isolation container` run. This was not run on your machine unless you run it. Limitations: containers share the host kernel, so this is not a VM-grade boundary and is not claimed to stop kernel exploits; Docker (Linux containers) is the only supported engine, Docker Desktop on Windows/macOS is untested; every timed run includes container start-up, so use large `--iterations` or expect `INCONCLUSIVE`; baseline and candidate use different images; baselines must build offline (`GOPROXY=off`). Reports record `environment.isolation` and the image IDs.
 
 ## Quick start
 
@@ -107,7 +123,7 @@ go run ./cmd/rustrush compare results/latest.json results/another-run.json
 - Records raw process timings, nearest-rank p50/p95/p99 process latency, median throughput, process failure counts, and OS/runtime metadata in versioned JSON plus a Markdown comparison report.
 - Reports `INCONCLUSIVE` when measurements are missing, malformed, failed, or too variable. Markdown labels observed benchmark results as measured, not estimated.
 - Renders and compares saved reports locally.
-- Calculates optional migration ROI from explicit user assumptions; it does not infer CPU costs or engineering effort from benchmark timings.
+- Calculates optional migration ROI from explicit user assumptions (plus an optional one-off migration cost). With `--report`, it links a saved benchmark report: the target CPU time is then an estimate derived from the measured wall-clock ratio, and only when the report is conclusive. `--scenarios` adds illustrative conservative/expected/optimistic sensitivity cases. Savings are never claimed when inputs are missing or the report is `INCONCLUSIVE`.
 
 ## Interpreting results
 

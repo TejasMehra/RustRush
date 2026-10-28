@@ -9,7 +9,8 @@ RustRush currently uses Go's standard library and has no third-party runtime dep
 - `internal/rustrush/workload.go` owns the deterministic Go workload, Rust candidate build/run sequence, timing, correctness gate, and report creation.
 - `internal/rustrush/json_workload.go` and `internal/rustrush/database_fixture.go` implement the Go baselines for the JSON fixture and CSV mock.
 - `internal/rustrush/models.go` defines the versioned report, percentile aggregation, validation, Markdown rendering, and comparison behavior.
-- `internal/rustrush/roi.go` calculates optional migration economics only from explicitly supplied assumptions.
+- `internal/rustrush/roi.go` calculates optional migration economics only from explicitly supplied assumptions; `roi_report.go` links a saved report (labeled estimate, blocked when inconclusive) and runs scenario sensitivity.
+- `internal/rustrush/container.go` is the optional fail-closed Docker runner for `candidate`; it plugs into the benchmark engine through the same process-runner hook as local execution.
 - `internal/rustrush/toolchain.go` discovers local Go and Rust compiler availability.
 - `examples/cpu-heavy/candidate.rs` is the Rust implementation used by the local demo.
 
@@ -23,4 +24,4 @@ Reports do not include source contents or absolute project paths. The report sch
 
 ## Deliberate scope limits
 
-Candidate translation, arbitrary benchmark adapters, profiling, ROI integration in benchmark reports, a real database workload, AI integrations, and remote sharing are not implemented. They should be introduced as separate modules only when their correctness and safety contracts can be tested.
+Candidate translation, arbitrary benchmark adapters, profiling, ROI embedded in benchmark reports, a real database workload, AI integrations, and remote sharing are not implemented. They should be introduced as separate modules only when their correctness and safety contracts can be tested.

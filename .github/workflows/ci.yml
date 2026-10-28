@@ -82,6 +82,15 @@ jobs:
             and ([.measurements[].correctness_output] | unique | length == 1)
             and all(.measurements[]; .status == "measured" and .error_count == 0 and (.samples | length) == 3)
           ' "$output/latest.json"
+          go run ./cmd/rustrush roi --report "$output/latest.json" --monthly-operations 1000000 \
+            --baseline-cpu-seconds 0.01 --cpu-hour-price 0.05 --engineering-hours 10 \
+            --engineering-hourly-cost 100 --monthly-maintenance-cost-delta 0 --scenarios --json > "$output/roi.json"
+          jq -e --slurpfile report "$output/latest.json" '
+            .report.verdict == $report[0].verdict
+            and (if .report.measured_values_used then .target_cpu_source == "estimated_from_report_wall_clock_ratio"
+                 else .claim == "NO_SAVINGS_CLAIM" end)
+          ' "$output/roi.json"
+
 
   container-isolation:
     runs-on: ubuntu-latest

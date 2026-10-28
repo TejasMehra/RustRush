@@ -322,6 +322,9 @@ func roi(args []string) error {
 	engineeringHours := flags.Float64("engineering-hours", 0, "estimated migration engineering hours")
 	engineeringRate := flags.Float64("engineering-hourly-cost", 0, "engineering cost per hour in USD")
 	maintenanceDelta := flags.Float64("monthly-maintenance-cost-delta", 0, "monthly target-minus-current maintenance cost in USD; may be negative")
+	migrationCost := flags.Float64("migration-cost", 0, "one-off migration cost in USD (added to engineering cost)")
+	reportPath := flags.String("report", "", "optional benchmark report JSON; target CPU time is then estimated from its measured wall-clock ratio")
+	scenarios := flags.Bool("scenarios", false, "also run illustrative conservative/expected/optimistic sensitivity scenarios")
 	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
 	help, err := parseFlags(flags, args)
 	if err != nil {
@@ -345,13 +348,27 @@ func roi(args []string) error {
 		EngineeringHours:               optionalFloat(*engineeringHours, provided["engineering-hours"]),
 		EngineeringCostPerHourUSD:      optionalFloat(*engineeringRate, provided["engineering-hourly-cost"]),
 		MonthlyMaintenanceCostDeltaUSD: optionalFloat(*maintenanceDelta, provided["monthly-maintenance-cost-delta"]),
+		MigrationCostUSD:               optionalFloat(*migrationCost, provided["migration-cost"]),
 	}
-	result, err := rustrush.CalculateROI(inputs)
+	var linked *rustrush.Report
+	if *reportPath != "" {
+		loaded, err := rustrush.ReadReport(*reportPath)
+		if err != nil {
+			return err
+		}
+		linked = &loaded
+	}
+	var scenarioSet []rustrush.ROIScenario
+	if *scenarios {
+		scenarioSet = rustrush.DefaultROIScenarios()
+	}
+	analysis, err := rustrush.AnalyzeROI(inputs, linked, scenarioSet)
 	if err != nil {
 		return err
 	}
+	result := analysis.Result
 	if *jsonOutput {
-		return rustrush.WriteJSON(os.Stdout, result)
+		return rustrush.WriteJSON(os.Stdout, analysis)
 	}
 	fmt.Println("Modeled ROI estimate; all supplied values are assumptions, not benchmark measurements.")
 	printOptionalMoney("Current monthly infrastructure cost", result.CurrentMonthlyCostUSD)
@@ -367,7 +384,25 @@ func roi(args []string) error {
 	if len(result.MissingInputs) > 0 {
 		fmt.Printf("Missing inputs: %v\n", result.MissingInputs)
 	}
-	for _, note := range result.Notes {
+	fmt.Printf("Claim: %s (target CPU source: %s)\n", analysis.Claim, analysis.TargetSource)
+	if analysis.Report != nil {
+		fmt.Printf("Linked report: verdict %s, correctness %s", analysis.Report.Verdict, analysis.Report.Correctness)
+		if analysis.Report.MeasuredValuesUsed {
+			fmt.Printf(", measured wall-clock ratio %.4f (candidate/baseline)", analysis.Report.WallClockRatio)
+		}
+		fmt.Println()
+	}
+	for _, item := range analysis.Scenarios {
+		fmt.Printf("Scenario %-12s %s", item.Scenario.Name, item.Claim)
+		if item.NetMonthlySavingsUSD != nil {
+			fmt.Printf(", net $%.2f/month", *item.NetMonthlySavingsUSD)
+		}
+		if item.BreakEvenMonths != nil {
+			fmt.Printf(", break-even %.2f months", *item.BreakEvenMonths)
+		}
+		fmt.Println()
+	}
+	for _, note := range append(result.Notes, analysis.Notes...) {
 		fmt.Printf("Note: %s\n", note)
 	}
 	return nil

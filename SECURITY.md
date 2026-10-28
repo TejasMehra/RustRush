@@ -14,7 +14,7 @@ RustRush is an early-stage local CLI. Please report suspected vulnerabilities pr
 
 ## Limitations
 
-A temporary directory and timeout are not a security sandbox and do not provide CPU, memory, filesystem, or network isolation. The current CLI does not execute scanned projects or arbitrary generated candidates. Do not adapt the demo to run untrusted code without a separate threat model and an appropriate sandbox. Windows process termination and resource isolation may have platform-specific limitations.
+A temporary directory and timeout (the default `process` mode) are not a security sandbox and do not provide CPU, memory, filesystem, or network isolation. The `candidate` command with `--isolation container` runs builds and processes in hardened Docker containers (no network, no capabilities, read-only root, non-root, resource limits, no Docker socket, sanitized env) and fails closed rather than falling back to local execution. Its runtime properties are probed in the CI `container-isolation` job, but containers share the host kernel: this is not a VM-grade boundary, a kernel or runtime vulnerability could defeat it, and Docker Desktop is untested. Anyone who can use the Docker daemon is already highly privileged on the host. Do not run untrusted code without your own threat model. Windows process termination and resource isolation may have platform-specific limitations.
 
 The scanner uses filename and directory heuristics to avoid credentials; it is not a secret-scanning product. Review reports before sharing them.
 

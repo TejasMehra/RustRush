@@ -14,6 +14,7 @@ type ROIInputs struct {
 	EngineeringHours               *float64 `json:"engineering_hours,omitempty"`
 	EngineeringCostPerHourUSD      *float64 `json:"engineering_cost_per_hour_usd,omitempty"`
 	MonthlyMaintenanceCostDeltaUSD *float64 `json:"monthly_maintenance_cost_delta_usd,omitempty"`
+	MigrationCostUSD               *float64 `json:"migration_cost_usd,omitempty"`
 }
 
 type ROIResult struct {
@@ -43,6 +44,9 @@ func CalculateROI(inputs ROIInputs) (ROIResult, error) {
 		{"engineering_hours", inputs.EngineeringHours},
 		{"engineering_cost_per_hour_usd", inputs.EngineeringCostPerHourUSD},
 		{"monthly_maintenance_cost_delta_usd", inputs.MonthlyMaintenanceCostDeltaUSD},
+	}
+	if inputs.MigrationCostUSD != nil && (!isFinite(*inputs.MigrationCostUSD) || *inputs.MigrationCostUSD <= 0) {
+		return ROIResult{}, errors.New("migration_cost_usd must be a finite number greater than zero")
 	}
 	for _, input := range namedInputs {
 		if input.value == nil {
@@ -104,8 +108,14 @@ func CalculateROI(inputs ROIInputs) (ROIResult, error) {
 		savings := *result.CurrentMonthlyCostUSD - *result.TargetMonthlyCostUSD
 		result.MonthlyInfrastructureSavingsUSD = &savings
 	}
-	if inputs.EngineeringHours != nil && inputs.EngineeringCostPerHourUSD != nil {
-		cost := *inputs.EngineeringHours * *inputs.EngineeringCostPerHourUSD
+	if (inputs.EngineeringHours != nil && inputs.EngineeringCostPerHourUSD != nil) || inputs.MigrationCostUSD != nil {
+		cost := 0.0
+		if inputs.EngineeringHours != nil && inputs.EngineeringCostPerHourUSD != nil {
+			cost = *inputs.EngineeringHours * *inputs.EngineeringCostPerHourUSD
+		}
+		if inputs.MigrationCostUSD != nil {
+			cost += *inputs.MigrationCostUSD
+		}
 		if !isFinite(cost) {
 			return ROIResult{}, errors.New("modeled engineering cost exceeds the supported numeric range")
 		}

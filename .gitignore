@@ -28,3 +28,5 @@ Thumbs.db
 /rustrush.exe
 *.test
 coverage.out
+# Local Netlify folder
+.netlify

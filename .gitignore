@@ -11,6 +11,18 @@
 *.p12
 *.pfx
 
+# Standalone website
+/website/node_modules/
+/website/dist/
+/website/.vite/
+website/npm-debug.log*
+website/yarn-debug.log*
+website/pnpm-debug.log*
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+
 # Go build and test outputs
 /rustrush
 /rustrush.exe

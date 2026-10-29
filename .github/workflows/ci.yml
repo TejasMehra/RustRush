@@ -121,9 +121,12 @@ jobs:
           jq -e '
             .correctness == "PASSED_FOR_CHECKSUM"
             and (.environment.isolation | startswith("container"))
-            and .environment.timing_mode == "steady_state_in_container"
-            and (.environment.container_startup_ms | contains("excluded from samples"))
-            and (.environment.container_exec_dispatch_ms_median | length > 0)
+            and .environment.timing_mode == "container_process_isolated"
+            and (.environment.container_run_overhead_ms_estimate_median | contains("derived residual estimate"))
+            and (.environment.container_invocation_wall_ms_median | length > 0)
+            and (.environment.timing_clock | contains("monotonic"))
+            and (.environment.timing_resolution_ns | contains("empirical minimum tick"))
+            and all(.measurements[].samples[]; .timer_resolution_ns > 0)
             and all(.measurements[]; .status == "measured" and .error_count == 0)
           ' "$output/latest.json"
       - name: Daemon-unavailable path fails closed

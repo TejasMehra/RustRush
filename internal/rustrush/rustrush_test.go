@@ -729,3 +729,39 @@ func testMeasurement(name string, durations []uint64, iterations uint64) Measure
 		OpsPerSec: summary.OpsPerSec, CoefficientOfVariation: summary.CoefficientOfVariation,
 	}
 }
+
+func TestMeasurementBelowClockResolutionQualityBudgetIsInconclusive(t *testing.T) {
+	baseline := testMeasurement("Go baseline", []uint64{999_000, 999_000, 999_000}, 10)
+	candidate := testMeasurement("Rust candidate", []uint64{999_000, 999_000, 999_000}, 10)
+	for _, measurement := range []*Measurement{&baseline, &candidate} {
+		for i := range measurement.Samples {
+			measurement.Samples[i].TimerResolutionNS = 1_000
+		}
+		if err := summarizeMeasurement(measurement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	verdict, reason := Decide("PASSED_FOR_CHECKSUM", baseline, candidate)
+	if verdict != VerdictInconclusive || !strings.Contains(reason, "1,000-tick quality screen") {
+		t.Fatalf("short samples must be inconclusive with a diagnostic, got %s: %s", verdict, reason)
+	}
+	if len(baseline.Samples) != 3 || baseline.Samples[0].DurationNS != 999_000 {
+		t.Fatalf("raw samples must be retained: %+v", baseline.Samples)
+	}
+	if validMeasurement(baseline) {
+		t.Fatal("quality warnings must invalidate aggregate measurements")
+	}
+}
+
+func TestMeasurementAtClockQualityBudgetRemainsEligible(t *testing.T) {
+	measurement := testMeasurement("Go baseline", []uint64{1_000_000, 1_000_000, 1_000_000}, 10)
+	for i := range measurement.Samples {
+		measurement.Samples[i].TimerResolutionNS = 1_000
+	}
+	if err := summarizeMeasurement(&measurement); err != nil {
+		t.Fatal(err)
+	}
+	if len(measurement.Warnings) != 0 {
+		t.Fatalf("exactly 1,000 ticks should not warn: %v", measurement.Warnings)
+	}
+}

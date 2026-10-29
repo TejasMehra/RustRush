@@ -95,13 +95,61 @@ func TestMarkdownUncertaintyWithoutMeasurementsInfersNothing(t *testing.T) {
 
 func TestRenderSVGCaptionMatchesTimingMode(t *testing.T) {
 	report := roiReport([]uint64{2_000_000, 2_000_000, 2_000_000}, []uint64{1_000_000, 1_000_000, 1_000_000})
-	report.Environment = map[string]string{"timing_mode": TimingSteadyState}
-	steady := RenderSVG(report)
-	if !strings.Contains(steady, "in-container process time") || strings.Contains(steady, "whole-process") {
-		t.Fatal("steady-state caption missing or mixed with end-to-end wording")
+	report.Environment = map[string]string{"timing_mode": TimingContainerRun}
+	fresh := RenderSVG(report)
+	if !strings.Contains(fresh, "fresh-container process time") || strings.Contains(fresh, "whole-process") {
+		t.Fatal("fresh-container caption missing or mixed with end-to-end wording")
 	}
+
+	report.Environment = map[string]string{"timing_mode": TimingSteadyState}
+	legacy := RenderSVG(report)
+	if !strings.Contains(legacy, "legacy EPOCHREALTIME process time") || strings.Contains(legacy, "whole-process") {
+		t.Fatal("legacy timing caption missing or mixed with end-to-end wording")
+	}
+
 	report.Environment = map[string]string{}
 	if end := RenderSVG(report); !strings.Contains(end, "whole-process wall-clock") || strings.Contains(end, "in-container") {
 		t.Fatal("end-to-end caption missing or mixed with steady-state wording")
+	}
+}
+
+func TestRenderSVGTruncatesCombinedLongTitle(t *testing.T) {
+	report := roiReport([]uint64{2_000_000, 2_000_000, 2_000_000}, []uint64{1_000_000, 1_000_000, 1_000_000})
+	report.Project = strings.Repeat("LongProjectName", 8)
+	report.Component = strings.Repeat("LongComponentLabel", 8)
+	svg := RenderSVG(report)
+	wellFormed(t, svg)
+	titleStart := strings.Index(svg, `class="title">`)
+	if titleStart < 0 {
+		t.Fatal("title missing")
+	}
+
+	titleStart += len(`class="title">`)
+	titleEnd := strings.Index(svg[titleStart:], "</text>")
+	if titleEnd < 0 {
+		t.Fatal("title not closed")
+	}
+	title := svg[titleStart : titleStart+titleEnd]
+	if !strings.HasSuffix(title, "…") || len([]rune(title)) > 62 {
+		t.Fatalf("combined title should be visibly ellipsized to a bounded width: %q", title)
+	}
+}
+
+func TestRenderSVGShowsMeasurementQualityWarning(t *testing.T) {
+	report := roiReport([]uint64{900_000, 900_000, 900_000}, []uint64{900_000, 900_000, 900_000})
+	for i := range report.Measurements {
+		for sample := range report.Measurements[i].Samples {
+			report.Measurements[i].Samples[sample].TimerResolutionNS = 1_000
+		}
+		if err := summarizeMeasurement(&report.Measurements[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svg := RenderSVG(report)
+	wellFormed(t, svg)
+	if !strings.Contains(svg, "1,000-tick quality screen") ||
+		!strings.Contains(svg, "n/a — invalid") ||
+		strings.Contains(svg, "Measured throughput delta") {
+		t.Fatalf("SVG must surface quality warnings and omit invalid comparison values:\n%s", svg)
 	}
 }

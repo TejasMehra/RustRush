@@ -51,8 +51,9 @@ type Finding struct {
 }
 
 type Sample struct {
-	DurationNS uint64 `json:"duration_ns"`
-	Output     string `json:"output,omitempty"`
+	DurationNS        uint64 `json:"duration_ns"`
+	TimerResolutionNS uint64 `json:"timer_resolution_ns,omitempty"`
+	Output            string `json:"output,omitempty"`
 }
 
 type Measurement struct {
@@ -70,6 +71,7 @@ type Measurement struct {
 	P99NS                  uint64   `json:"p99_ns,omitempty"`
 	OpsPerSec              float64  `json:"ops_per_sec,omitempty"`
 	CoefficientOfVariation float64  `json:"coefficient_of_variation,omitempty"`
+	Warnings               []string `json:"warnings,omitempty"`
 	Error                  string   `json:"error,omitempty"`
 }
 
@@ -233,6 +235,9 @@ func RenderMarkdown(report Report) string {
 			if len(measurement.Samples) > 0 {
 				sampleNotes += fmt.Sprintf("\n**%s partial raw process samples (ns):** %v\n", measurement.Name, sampleDurations(measurement.Samples))
 			}
+			for _, warning := range measurement.Warnings {
+				sampleNotes += fmt.Sprintf("\n**%s measurement-quality warning:** %s\n", measurement.Name, warning)
+			}
 			if measurement.Error != "" {
 				sampleNotes += fmt.Sprintf("\n**%s error:** %s\n", measurement.Name, strings.ReplaceAll(strings.ReplaceAll(measurement.Error, "`", "'"), "\n", " "))
 			}
@@ -292,7 +297,7 @@ func CompareReports(first, second Report) string {
 		return out + "Comparison unavailable: component or workload definitions differ.\n"
 	}
 	if timingMode(first) != timingMode(second) {
-		return out + fmt.Sprintf("Comparison unavailable: timing modes differ (%s vs %s); steady-state and end-to-end timings are never mixed.\n", timingMode(first), timingMode(second))
+		return out + fmt.Sprintf("Comparison unavailable: timing modes differ (%s vs %s); unlike timing modes are never mixed.\n", timingMode(first), timingMode(second))
 	}
 	if first.Correctness != "PASSED_FOR_CHECKSUM" || second.Correctness != "PASSED_FOR_CHECKSUM" {
 		return out + "Comparison unavailable: both reports must pass the correctness check.\n"
@@ -361,6 +366,10 @@ func Decide(correctness string, baseline, candidate Measurement) (Verdict, strin
 	if correctness != "PASSED_FOR_CHECKSUM" {
 		return VerdictInconclusive, "Correctness was not established; performance evidence is invalid."
 	}
+	if len(baseline.Warnings) > 0 || len(candidate.Warnings) > 0 {
+		warnings := append(append([]string(nil), baseline.Warnings...), candidate.Warnings...)
+		return VerdictInconclusive, "Measurement quality limits were exceeded (" + strings.Join(warnings, "; ") + "); raw samples are retained, but a performance verdict is not supported."
+	}
 	if !validMeasurement(baseline) || !validMeasurement(candidate) ||
 		baseline.Iterations != candidate.Iterations ||
 		baseline.Repetitions != candidate.Repetitions ||
@@ -385,7 +394,7 @@ func Decide(correctness string, baseline, candidate Measurement) (Verdict, strin
 }
 
 func validMeasurement(measurement Measurement) bool {
-	if measurement.Status != "measured" || measurement.Iterations == 0 ||
+	if measurement.Status != "measured" || len(measurement.Warnings) > 0 || measurement.Iterations == 0 ||
 		measurement.Repetitions < 3 || len(measurement.Samples) != measurement.Repetitions ||
 		measurement.WarmupRuns != 1 || measurement.ErrorCount != 0 || measurement.MedianNS == 0 ||
 		measurement.CorrectnessOutput == "" ||
@@ -461,8 +470,11 @@ func timingMode(report Report) string {
 }
 
 func timingDescription(report Report) string {
+	if timingMode(report) == TimingContainerRun {
+		return "All durations and throughput below are measured observations, not estimates. Timing mode: **fresh container per invocation**. Each sample is a Go monotonic-clock duration around one workload process, including its startup and stdout capture; timer-helper startup, container lifecycle, compilation, and Docker dispatch are excluded from samples. Container invocation wall time, lifecycle overhead, failed-run duration, and empirical clock resolution are listed under metadata where available; resolution is not an accuracy guarantee. Percentiles are over repeated process durations, not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors."
+	}
 	if timingMode(report) == TimingSteadyState {
-		return "All durations and throughput below are measured observations, not estimates. Timing mode: **steady state in container**. Each sample is the in-container wall-clock time of one workload process (1 microsecond resolution), taken after both containers were created and each implementation was warmed up; container creation/start-up, compilation and docker exec dispatch are excluded and listed under metadata. Percentiles are over repeated process durations, not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors."
+		return "All durations and throughput below are recorded observations, not estimates. Timing mode: **legacy persistent-container EPOCHREALTIME timing**. Samples used bash wall-clock timestamps with nominal 1 microsecond resolution around the workload process, including its startup and stdout; timer resolution is not an accuracy guarantee. Container startup, compilation, and Docker exec dispatch were excluded and listed under legacy metadata. This mode is retained only to render older reports. Percentiles are over repeated process durations, not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors."
 	}
 	return "All durations and throughput below are measured observations, not estimates. Timing mode: **process end-to-end**. Latency percentiles are process wall-clock durations (startup, argument parsing, workload, and output capture), not per-request latency. Throughput is workload iterations divided by the median process duration. Failed process attempts are counted as errors."
 }

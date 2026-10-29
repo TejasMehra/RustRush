@@ -115,6 +115,15 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			return Report{}, fmt.Errorf("create temporary directory: %w", err)
 		}
 	}
+	timerSourceDir := filepath.Join(tempDir, "timer-source")
+	if engine != nil && options.runProcess == nil {
+		if err := os.MkdirAll(timerSourceDir, 0o700); err != nil {
+			return Report{}, fmt.Errorf("create timer source directory: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(timerSourceDir, "main.go"), timerSource, 0o600); err != nil {
+			return Report{}, fmt.Errorf("write container timer source: %w", err)
+		}
+	}
 	if err := copyTree(baselineDir, baselineCopy); err != nil {
 		return Report{}, err
 	}
@@ -157,7 +166,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		GeneratedAt:   time.Now().UTC(),
 		Project:       filepath.Base(baselineDir),
 		Component:     "user-supplied operation (Go main package vs. single-file Rust candidate)",
-		Workload: fmt.Sprintf("Both programs run with --iterations %d%s; stdout must be identical before any timing",
+		Workload: fmt.Sprintf("Both programs run with --iterations %d%s; stdout must be identical before timed repetitions",
 			options.Iterations, map[bool]string{true: " and the same --input file", false: ""}[inputName != ""]),
 		Iterations:  options.Iterations,
 		Correctness: "NOT_RUN",
@@ -168,7 +177,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			"CPU utilization, memory, allocation counts, and request-level latency are not measured.",
 			"CPU model and background system load are not captured.",
 			"Equivalence is judged only by identical stdout for the supplied inputs; it does not prove semantic equivalence.",
-			"Process startup is included in each sample and can dominate short workloads.",
+			"Process startup and output capture are included in each sample and can dominate short workloads.",
 		},
 		Reproduction: fmt.Sprintf("rustrush candidate --baseline <go-main-dir> --candidate <candidate.rs>%s --iterations %d --repetitions %d --timeout %s --allow-execute",
 			map[bool]string{true: " --input <file>", false: ""}[inputName != ""], options.Iterations, options.Repetitions, options.Timeout),
@@ -185,7 +194,10 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		Iterations: options.Iterations, Repetitions: options.Repetitions, Timeout: options.Timeout,
 		SourceRoot: workDir, runProcess: options.runProcess,
 	}
-	startTiming := func(context.Context) (func(), error) { return func() {}, nil }
+	inputDir := ""
+	if inputName != "" {
+		inputDir = filepath.Join(tempDir, "input")
+	}
 	if engine != nil {
 		for key, value := range engine.metadata() {
 			report.Environment[key] = value
@@ -194,37 +206,18 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		report.Assumptions["go_build"] = "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built inside the Go container from a read-only copy"
 		var kept []string
 		for _, limitation := range report.Limitations {
-			if !strings.HasPrefix(limitation, "Process startup is included") {
+			if !strings.HasPrefix(limitation, "Process startup and output capture are included") {
 				kept = append(kept, limitation)
 			}
 		}
 		report.Limitations = append(kept,
 			"Container isolation shares the host kernel and depends on the container runtime; it has not been independently validated as a security boundary. Do not run untrusted code on a machine you cannot afford to compromise.",
-			"Samples are steady-state: the in-container wall-clock time of the workload process (bash fork/exec of the workload included, 1 microsecond resolution), measured after both containers were created and each implementation was warmed up. Container creation, image preparation, compilation and docker exec dispatch are excluded and recorded separately as metadata. This is not comparable with process_end_to_end reports.",
-			"The baseline runs in the Go image and the candidate in the Rust image; differences between the images are part of the measurement.")
-		report.Environment["timing_mode"] = TimingSteadyState
-		report.Assumptions["timing_scope"] = "in-container workload process wall-clock time (steady state); excludes container creation/start, compilation, and docker exec dispatch"
-		report.Assumptions["latency_scope"] = "one in-container process duration per repetition after one warm-up per implementation"
-		inputDir := ""
-		if inputName != "" {
-			inputDir = filepath.Join(tempDir, "input")
-		}
-		startTiming = func(ctx context.Context) (func(), error) {
-			if runOptions.runProcess != nil {
-				return func() {}, nil
-			}
-			session, err := engine.startSession(ctx, binDir, inputDir)
-			if err != nil {
-				return nil, err
-			}
-			runOptions.runProcess = session.runner()
-			return func() {
-				session.close()
-				for key, value := range session.metadata() {
-					report.Environment[key] = value
-				}
-			}, nil
-		}
+			"Each implementation's first warm-up also serves as its correctness probe; that run's duration is discarded, and timed repetitions start only after outputs match. Every warm-up/correctness run and measured invocation uses its own hardened docker run --rm container. The Go time.Since monotonic timer wraps the workload child; child startup and stdout capture are included, while timer-helper startup, container lifecycle, compilation, and Docker dispatch are excluded. Full invocation wall time is measured; the residual overhead is a derived estimate because clocks are not cross-calibrated. Clock resolution is an empirical minimum tick, not an accuracy guarantee; instrumentation accuracy is not calibrated.",
+			"Each invocation has a fresh container filesystem, writable /tmp tmpfs, working directory, HOME, and TMPDIR, so process-created files and caches do not persist into later repetitions. Host page caches, kernel state, and external machine load are not reset.",
+			"The baseline runs in the Go image and the candidate in the Rust image; differences between images and their system libraries are part of the measurement. This timing mode is not comparable with process_end_to_end reports.")
+		report.Environment["timing_mode"] = TimingContainerRun
+		report.Assumptions["timing_scope"] = "fresh-container workload process duration from Go's monotonic clock; excludes timer helper startup, container lifecycle, compilation, and Docker dispatch"
+		report.Assumptions["latency_scope"] = "one fresh-container process duration per implementation warm-up/correctness run (discarded) and each measured repetition"
 		build = func(ctx context.Context, tool string, args []string, dir string, _ []string) (string, error) {
 			if tool == "go" {
 				return engine.buildGo(ctx, dir, binDir)
@@ -255,6 +248,19 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		report.Reason = "The Go baseline did not build; a performance comparison was not made."
 		report.Limitations = append(report.Limitations, "Baseline compilation failed; no measurements are available.")
 		return report, nil
+	}
+	if engine != nil && options.runProcess == nil {
+		output, err = engine.buildTimer(buildCtx, timerSourceDir, binDir)
+		if err != nil {
+			message := redact(buildMessage(output, err.Error()))
+			report.Measurements = []Measurement{
+				notRun("Go baseline", "failed", message, 1),
+				notRun("Rust candidate", "not_run", "", 0),
+			}
+			report.Reason = "The monotonic container timer could not be built; no performance measurements were collected."
+			report.Limitations = append(report.Limitations, "The benchmark timer could not be prepared; no comparison is valid.")
+			return report, nil
+		}
 	}
 
 	rustc, lookErr := lookPath("rustc")
@@ -292,19 +298,17 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		return report, nil
 	}
 
-	stopTiming, prepareErr := startTiming(ctx)
-	if prepareErr != nil {
-		message := redact(prepareErr.Error())
-		report.Measurements = []Measurement{
-			{Name: "Go baseline", Status: "failed", Iterations: options.Iterations, Samples: []Sample{}, ErrorCount: 1, Error: message},
-			{Name: "Rust candidate", Status: "not_run", Iterations: options.Iterations, Samples: []Sample{}},
-		}
-		report.Reason = "The container measurement environment could not be prepared; no timings were collected."
-		report.Limitations = append(report.Limitations, "Failed environment preparation invalidates the comparison.")
-		return report, nil
+	var containerRunner *containerRunner
+	if engine != nil && options.runProcess == nil {
+		containerRunner = engine.runner(binDir, inputDir)
+		runOptions.runProcess = containerRunner.processRunner()
 	}
 	baseline, candidate, correctnessPassed, pairErr := measurePair(ctx, runOptions, baselineExe, prefix, candidateExe, prefix)
-	stopTiming()
+	if containerRunner != nil {
+		for key, value := range containerRunner.metadata() {
+			report.Environment[key] = value
+		}
+	}
 	baseline.Error, candidate.Error = redact(baseline.Error), redact(candidate.Error)
 	report.Measurements = []Measurement{baseline, candidate}
 	switch {

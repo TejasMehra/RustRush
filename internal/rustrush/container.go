@@ -102,9 +102,7 @@ type containerSpec struct {
 	Command []string
 	// TmpfsExec allows executing from /tmp; only builds need it.
 	TmpfsExec bool
-	// Detach starts a long-lived container; used for steady-state measurement.
-	Detach bool
-	Config ContainerConfig
+	Config    ContainerConfig
 }
 
 // containerArgs returns the docker CLI arguments for a hardened, network-less run.
@@ -127,9 +125,6 @@ func containerArgs(spec containerSpec) ([]string, error) {
 		tmpfs = "/tmp:rw,nosuid,exec,size=512m"
 	}
 	args := []string{"run"}
-	if spec.Detach {
-		args = append(args, "--detach")
-	}
 	args = append(args,
 		"--rm", "--name", spec.Name, "--pull", "never",
 		"--network", "none",
@@ -292,8 +287,11 @@ func (e *containerEngine) run(ctx context.Context, spec containerSpec) (string, 
 	if ctx.Err() != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_, _, _ = e.exec(cleanupCtx, []string{"rm", "--force", name})
-		return stdout, stderr, ctx.Err()
+		_, cleanupStderr, cleanupErr := e.exec(cleanupCtx, []string{"rm", "--force", name})
+		if cleanupErr != nil {
+			cleanupErr = fmt.Errorf("remove timed-out container %s: %w: %s", name, cleanupErr, firstLine(cleanupStderr, nil))
+		}
+		return stdout, stderr, errors.Join(ctx.Err(), cleanupErr)
 	}
 	return stdout, stderr, runErr
 }
@@ -315,6 +313,17 @@ func (e *containerEngine) buildRust(ctx context.Context, srcDir, outDir string) 
 		Mounts:  []containerMount{{srcDir, containerSrc, true}, {outDir, containerOut, false}},
 		Env:     []string{"HOME=/tmp"},
 		Command: []string{"rustc", "--edition=2021", "-C", "opt-level=3", containerSrc + "/candidate.rs", "-o", containerOut + "/candidate"},
+	})
+	return stdout + stderr, err
+}
+
+func (e *containerEngine) buildTimer(ctx context.Context, srcDir, outDir string) (string, error) {
+	stdout, stderr, err := e.run(ctx, containerSpec{
+		Image: e.config.GoImage, Workdir: containerSrc, TmpfsExec: true,
+		Mounts: []containerMount{{srcDir, containerSrc, true}, {outDir, containerOut, false}},
+		Env: []string{"HOME=/tmp", "GOCACHE=/tmp/gocache", "GOFLAGS=-mod=readonly", "GOPROXY=off",
+			"GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOWORK=off"},
+		Command: []string{"go", "build", "-buildvcs=false", "-o", containerOut + "/timer", containerSrc + "/main.go"},
 	})
 	return stdout + stderr, err
 }

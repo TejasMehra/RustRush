@@ -375,6 +375,13 @@ func summarizeMeasurement(measurement *Measurement) error {
 	if err != nil {
 		return err
 	}
+	for _, sample := range measurement.Samples {
+		if sample.TimerResolutionNS > 0 && sample.DurationNS/sample.TimerResolutionNS < 1000 {
+			measurement.Warnings = append(measurement.Warnings,
+				"sample below the 1,000-tick quality screen; nominal clock quantization may exceed 0.1%, and accuracy is not calibrated")
+			break
+		}
+	}
 	measurement.MedianNS = summary.MedianNS
 	measurement.P50NS = summary.P50NS
 	measurement.P95NS = summary.P95NS

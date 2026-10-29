@@ -72,7 +72,11 @@ func RenderSVG(report Report) string {
 			if status == "measured" || status == "" {
 				status = "invalid"
 			}
-			rows = append(rows, fmt.Sprintf(`<text x="190" y="%d" class="muted">n/a — %s (%d errors)</text>`, y, svgText(status), measurement.ErrorCount))
+			detail := fmt.Sprintf("n/a — %s (%d errors)", status, measurement.ErrorCount)
+			if len(measurement.Warnings) > 0 {
+				detail += ": " + strings.Join(measurement.Warnings, "; ")
+			}
+			rows = append(rows, fmt.Sprintf(`<text x="190" y="%d" class="muted">%s</text>`, y, svgText(truncateText(detail, 80))))
 			y += 56
 			continue
 		}
@@ -107,13 +111,16 @@ func RenderSVG(report Report) string {
 	fmt.Fprintf(&out, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" role="img" aria-label="RustRush benchmark report">`+"\n", svgWidth, height, svgWidth, height)
 	out.WriteString(`<style>text{font-family:Segoe UI,Helvetica,Arial,sans-serif;fill:#24292f}.title{font-size:20px;font-weight:600}.label{font-size:14px;font-weight:600}.value{font-size:13px}.muted{font-size:12px;fill:#57606a}.badge{font-size:14px;font-weight:700;fill:#fff}</style>` + "\n")
 	fmt.Fprintf(&out, `<rect width="%d" height="%d" fill="#ffffff" stroke="#d0d7de"/>`+"\n", svgWidth, height)
-	fmt.Fprintf(&out, `<text x="24" y="38" class="title">RustRush: %s / %s</text>`+"\n", svgText(truncateText(report.Project, 40)), svgText(truncateText(report.Component, 40)))
+	title := truncateText(fmt.Sprintf("RustRush: %s / %s", report.Project, report.Component), 62)
+	fmt.Fprintf(&out, `<text x="24" y="38" class="title">%s</text>`+"\n", svgText(title))
 	fmt.Fprintf(&out, `<rect x="24" y="52" width="190" height="28" rx="6" fill="%s"/><text x="36" y="71" class="badge">%s</text>`+"\n", verdictColor(report.Verdict), svgText(string(report.Verdict)))
 	fmt.Fprintf(&out, `<text x="230" y="71" class="value">Correctness gate: %s</text>`+"\n", svgText(report.Correctness))
 	fmt.Fprintf(&out, `<text x="24" y="104" class="muted">Workload: %s · %d iterations per process</text>`+"\n", svgText(truncateText(report.Workload, 80)), report.Iterations)
 	scope := "Median whole-process wall-clock time per run (includes process start-up)"
-	if timingMode(report) == TimingSteadyState {
-		scope = "Median in-container process time per run, excluding container start-up"
+	if timingMode(report) == TimingContainerRun {
+		scope = "Median fresh-container process time (excludes container lifecycle)"
+	} else if timingMode(report) == TimingSteadyState {
+		scope = "Median legacy EPOCHREALTIME process time (includes workload startup)"
 	}
 	fmt.Fprintf(&out, `<text x="24" y="124" class="muted">%s (shorter is faster); measured in this run.</text>`+"\n", svgText(scope))
 	for _, row := range rows {

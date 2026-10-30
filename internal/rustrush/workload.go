@@ -22,6 +22,7 @@ type DemoOptions struct {
 	Executable  string
 	SourceRoot  string
 	runProcess  processRunner
+	runEnv      []string
 }
 
 type processRunner func(context.Context, string, []string, string, []string) (Sample, error)
@@ -259,19 +260,35 @@ func measurePair(
 	candidateExecutable string,
 	candidatePrefix []string,
 ) (Measurement, Measurement, bool, error) {
-	baseline := newMeasurement("Go baseline", options)
+	return measurePairNamed(ctx, options, "Go baseline", baselineExecutable, baselinePrefix, candidateExecutable, candidatePrefix)
+}
+
+func measurePairNamed(
+	ctx context.Context,
+	options DemoOptions,
+	baselineName string,
+	baselineExecutable string,
+	baselinePrefix []string,
+	candidateExecutable string,
+	candidatePrefix []string,
+) (Measurement, Measurement, bool, error) {
+	baseline := newMeasurement(baselineName, options)
 	candidate := newMeasurement("Rust candidate", options)
 	run := func(executable string, prefix []string) (Sample, error) {
 		runCtx, cancel := context.WithTimeout(ctx, options.Timeout)
 		defer cancel()
 		args := append(append([]string(nil), prefix...), "--iterations", strconv.FormatUint(options.Iterations, 10))
-		if options.runProcess != nil {
-			return options.runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
+		env := options.runEnv
+		if env == nil {
+			env = minimalEnvironment()
 		}
-		return runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
+		if options.runProcess != nil {
+			return options.runProcess(runCtx, executable, args, options.SourceRoot, env)
+		}
+		return runProcess(runCtx, executable, args, options.SourceRoot, env)
 	}
 	baseline.Status = "measured"
-	goWarmup, err := run(baselineExecutable, baselinePrefix)
+	baselineWarmup, err := run(baselineExecutable, baselinePrefix)
 	if err != nil {
 		recordMeasurementFailure(&baseline, err)
 		candidate.Status = "not_run"
@@ -286,21 +303,21 @@ func measurePair(
 		return baseline, candidate, false, err
 	}
 	candidate.WarmupRuns = 1
-	if goWarmup.Output == "" || rustWarmup.Output == "" {
+	if baselineWarmup.Output == "" || rustWarmup.Output == "" {
 		baseline.Status = "correctness_failed"
 		candidate.Status = "correctness_failed"
 		candidate.ErrorCount = 1
 		candidate.Error = "correctness probe returned empty output"
 		return baseline, candidate, false, nil
 	}
-	if goWarmup.Output != rustWarmup.Output {
+	if baselineWarmup.Output != rustWarmup.Output {
 		baseline.Status = "correctness_failed"
 		candidate.Status = "correctness_failed"
 		candidate.ErrorCount = 1
-		candidate.Error = "correctness probe output did not match the Go baseline"
+		candidate.Error = "correctness probe output did not match the baseline"
 		return baseline, candidate, false, nil
 	}
-	baseline.CorrectnessOutput = goWarmup.Output
+	baseline.CorrectnessOutput = baselineWarmup.Output
 	candidate.CorrectnessOutput = rustWarmup.Output
 	for i := 0; i < options.Repetitions; i++ {
 		order := []struct {
@@ -309,7 +326,7 @@ func measurePair(
 			prefix      []string
 			expected    string
 		}{
-			{&baseline, baselineExecutable, baselinePrefix, goWarmup.Output},
+			{&baseline, baselineExecutable, baselinePrefix, baselineWarmup.Output},
 			{&candidate, candidateExecutable, candidatePrefix, rustWarmup.Output},
 		}
 		if i%2 == 1 {
@@ -419,10 +436,14 @@ func measure(ctx context.Context, options DemoOptions, name, executable string, 
 		runCtx, cancel := context.WithTimeout(ctx, options.Timeout)
 		defer cancel()
 		args := append(append([]string(nil), prefix...), "--iterations", strconv.FormatUint(options.Iterations, 10))
-		if options.runProcess != nil {
-			return options.runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
+		env := options.runEnv
+		if env == nil {
+			env = minimalEnvironment()
 		}
-		return runProcess(runCtx, executable, args, options.SourceRoot, minimalEnvironment())
+		if options.runProcess != nil {
+			return options.runProcess(runCtx, executable, args, options.SourceRoot, env)
+		}
+		return runProcess(runCtx, executable, args, options.SourceRoot, env)
 	}
 	result := newMeasurement(name, options)
 	result.Status = "measured"

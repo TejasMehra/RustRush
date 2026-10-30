@@ -10,8 +10,8 @@ RustRush writes UTF-8 JSON with a top-level `schema_version` of `"1.1"`. The CLI
 | `workload`, `iterations` | Workload description and iteration count per process |
 | `correctness` | `PASSED_FOR_CHECKSUM`, `FAILED`, or `NOT_RUN` |
 | `verdict`, `reason` | Evidence-limited recommendation and explanation |
-| `throughput_delta_ops_per_sec`, `throughput_delta_percent` | Rust-vs-Go delta when both implementations are validly measured |
-| `environment` | OS, architecture, Go runtime/compiler, CPU count, Go `GOMAXPROCS`, and Rust compiler/version flags when available |
+| `throughput_delta_ops_per_sec`, `throughput_delta_percent` | Rust-versus-selected-baseline delta when both implementations are validly measured |
+| `environment` | OS, architecture, RustRush's Go runtime/compiler, CPU count, Go `GOMAXPROCS`, selected `baseline_language`, and the Python runtime version for Python baselines, plus Rust compiler/flags when available |
 | `measurements` | Per-implementation status, repetitions, warm-up count, process error count, correctness-probe output, raw nanosecond samples, process-duration p50/p95/p99, median throughput, coefficient of variation, and any measurement-quality warnings |
 | `limitations` | Caveats that affect interpretation |
 | `reproduction` | Command used to rerun the workload |

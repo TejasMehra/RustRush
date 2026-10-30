@@ -103,6 +103,22 @@ func TestAnalyzeROIEstimatesTargetFromMeasuredReport(t *testing.T) {
 	}
 }
 
+func TestAnalyzeROIEstimatesFromPythonBaselineReport(t *testing.T) {
+	report := roiReport([]uint64{1000, 1000, 1000}, []uint64{500, 500, 500})
+	report.Environment["baseline_language"] = "python"
+	report.Measurements[0].Name = "Python baseline"
+	inputs := fullInputs()
+	inputs.TargetCPUSecondsPerOperation = nil
+	analysis, err := AnalyzeROI(inputs, &report, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.Report == nil || !analysis.Report.MeasuredValuesUsed ||
+		!strings.Contains(analysis.Report.ProcessWallClockMsg, "Python baseline / Rust candidate") {
+		t.Fatalf("Python report should link its measured ratio accurately: %+v", analysis.Report)
+	}
+}
+
 func TestAnalyzeROIUserTargetWinsOverReport(t *testing.T) {
 	report := roiReport([]uint64{1000, 1000, 1000}, []uint64{500, 500, 500})
 	analysis, err := AnalyzeROI(fullInputs(), &report, nil)

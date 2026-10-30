@@ -30,8 +30,9 @@ const (
 )
 
 type Toolchain struct {
-	Go    string `json:"go,omitempty"`
-	Rustc string `json:"rustc,omitempty"`
+	Go     string `json:"go,omitempty"`
+	Python string `json:"python,omitempty"`
+	Rustc  string `json:"rustc,omitempty"`
 }
 
 type Analysis struct {
@@ -171,9 +172,10 @@ func normalizeReportEvidence(report *Report) {
 		return
 	}
 	var baseline, candidate Measurement
+	baselineName := baselineMeasurementName(report.Environment["baseline_language"])
 	for _, measurement := range report.Measurements {
 		switch measurement.Name {
-		case "Go baseline":
+		case baselineName:
 			baseline = measurement
 		case "Rust candidate":
 			candidate = measurement
@@ -189,6 +191,13 @@ func normalizeReportEvidence(report *Report) {
 	percent := delta / baseline.OpsPerSec * 100
 	report.ThroughputDeltaOpsPerSec = &delta
 	report.ThroughputDeltaPercent = &percent
+}
+
+func baselineMeasurementName(language string) string {
+	if language == "python" {
+		return "Python baseline"
+	}
+	return "Go baseline"
 }
 
 func WriteReport(directory string, report Report) error {
@@ -251,7 +260,11 @@ func RenderMarkdown(report Report) string {
 	}
 	out += sampleNotes
 	if report.ThroughputDeltaPercent != nil && report.ThroughputDeltaOpsPerSec != nil {
-		out += fmt.Sprintf("\n**Measured throughput delta** (Rust candidate vs Go baseline): %+.2f ops/s (%+.2f%%).\n",
+		baselineName := "Go baseline"
+		if language := report.Environment["baseline_language"]; language != "" {
+			baselineName = strings.ToUpper(language[:1]) + language[1:] + " baseline"
+		}
+		out += fmt.Sprintf("\n**Measured throughput delta** (Rust candidate vs %s): %+.2f ops/s (%+.2f%%).\n", baselineName,
 			*report.ThroughputDeltaOpsPerSec, *report.ThroughputDeltaPercent)
 	}
 	out += uncertaintySection(report)
@@ -314,6 +327,21 @@ func CompareReports(first, second Report) string {
 		if first.Environment[key] != second.Environment[key] {
 			return out + "Comparison unavailable: Rust compiler metadata differs.\n"
 		}
+	}
+	firstBaselineLanguage := first.Environment["baseline_language"]
+	secondBaselineLanguage := second.Environment["baseline_language"]
+	if firstBaselineLanguage == "" {
+		firstBaselineLanguage = "go"
+	}
+	if secondBaselineLanguage == "" {
+		secondBaselineLanguage = "go"
+	}
+	if firstBaselineLanguage != secondBaselineLanguage {
+		return out + "Comparison unavailable: baseline languages differ.\n"
+	}
+	if firstBaselineLanguage == "python" &&
+		(first.Environment["python_runtime"] == "" || first.Environment["python_runtime"] != second.Environment["python_runtime"]) {
+		return out + "Comparison unavailable: Python runtime metadata differs.\n"
 	}
 	secondByName := make(map[string]Measurement, len(second.Measurements))
 	for _, measurement := range second.Measurements {

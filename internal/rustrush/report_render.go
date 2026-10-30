@@ -12,6 +12,7 @@ func uncertaintySection(report Report) string {
 	var out strings.Builder
 	out.WriteString("\n## Uncertainty\n\n")
 	var baseline, candidate Measurement
+	baselineName := baselineMeasurementName(report.Environment["baseline_language"])
 	count := 0
 	for _, measurement := range report.Measurements {
 		if measurement.Status != "measured" || !validMeasurement(measurement) {
@@ -24,7 +25,7 @@ func uncertaintySection(report Report) string {
 			measurement.Name, len(durations), float64(durations[0])/1e6, float64(measurement.MedianNS)/1e6,
 			float64(durations[len(durations)-1])/1e6, measurement.CoefficientOfVariation*100)
 		switch measurement.Name {
-		case "Go baseline":
+		case baselineName:
 			baseline = measurement
 		case "Rust candidate":
 			candidate = measurement
@@ -35,7 +36,8 @@ func uncertaintySection(report Report) string {
 		return out.String()
 	}
 	if report.Verdict != VerdictInconclusive && baseline.MedianNS > 0 && candidate.MedianNS > 0 {
-		fmt.Fprintf(&out, "\nMeasured ratio of median durations (Go baseline / Rust candidate): %.3f. Values above 1 mean the candidate's median process time was shorter in this run.\n",
+		fmt.Fprintf(&out, "\nMeasured ratio of median durations (%s / Rust candidate): %.3f. Values above 1 mean the candidate's median process time was shorter in this run.\n",
+			baselineName,
 			float64(baseline.MedianNS)/float64(candidate.MedianNS))
 	}
 	out.WriteString("\nNo confidence intervals are computed. A handful of trials on one machine cannot establish statistical significance; repeat the run and compare before acting.\n")

@@ -14,7 +14,7 @@ const methodSteps = [
   {
     number: "01",
     title: "Choose one operation",
-    body: "Use the guide to inspect a Go module. Its operation rankings come from source patterns, not production profiling.",
+    body: "Use the guide to inspect a Go module. Its operation rankings come from source patterns, not production profiling; candidate runs also accept a single Python baseline file.",
   },
   {
     number: "02",
@@ -96,7 +96,7 @@ function App() {
                 <p className="hero-index">THE REWRITE QUESTION</p>
                 <h1 id="hero-title">Before you rewrite it, <em>measure it.</em></h1>
                 <p className="hero-lede">
-                  Put a Go operation beside a Rust candidate. RustRush checks that
+                  Put a Go operation or single Python file beside a Rust candidate. RustRush checks that
                   their outputs match, then measures both before you commit to the work.
                 </p>
                 <div className="hero-actions">
@@ -133,7 +133,7 @@ function App() {
                     <span>ILLUSTRATION · NOT TO SCALE</span>
                   </div>
                   <svg viewBox="0 0 620 174" role="img" aria-labelledby="protocol-title protocol-desc">
-                    <title id="protocol-title">Go and Rust benchmark protocol</title>
+                    <title id="protocol-title">Go or Python and Rust benchmark protocol</title>
                     <desc id="protocol-desc">
                       A schematic of both implementations receiving the same input,
                       passing through an output check, then entering timing. The
@@ -142,7 +142,7 @@ function App() {
                     <text className="svg-head" x="170" y="24">SAME INPUT</text>
                     <text className="svg-head" x="355" y="24">OUTPUT CHECK</text>
                     <text className="svg-head" x="520" y="24">TIMING</text>
-                    <text className="svg-lane" x="4" y="72">GO</text>
+                    <text className="svg-lane" x="4" y="72">BASELINE</text>
                     <text className="svg-sublane" x="4" y="88">baseline</text>
                     <text className="svg-lane" x="4" y="133">RUST</text>
                     <text className="svg-sublane" x="4" y="149">candidate</text>
@@ -166,7 +166,7 @@ function App() {
                 </div>
                 <table className="sheet-measurements" aria-label="Report measurement fields, unavailable because no benchmark is attached">
                   <thead>
-                    <tr><th scope="col">PROCESS MEASUREMENT</th><th scope="col">GO</th><th scope="col">RUST</th></tr>
+                    <tr><th scope="col">PROCESS MEASUREMENT</th><th scope="col">BASELINE</th><th scope="col">RUST</th></tr>
                   </thead>
                   <tbody>
                     <tr><th scope="row">p50 / p95 / p99</th><td>n/a</td><td>n/a</td></tr>
@@ -246,7 +246,7 @@ function App() {
                 <div className="section-intro">
                   <p className="section-kicker">Run it on your machine</p>
                   <h2 id="start-title">Start with the <em>demo.</em></h2>
-                  <p>Go 1.22 or newer is enough. A conclusive Go-versus-Rust run also needs `rustc` on your PATH.</p>
+                  <p>Go 1.22 or newer is enough for the demo. Candidate runs accept Go or a single Python baseline; a conclusive comparison also needs `rustc` on your PATH.</p>
                   <a className="inline-link" href={`${docs}docs/benchmark-methodology.md`}>Benchmark methodology <span aria-hidden="true">↗</span></a>
                 </div>
                 <div className="command-block">

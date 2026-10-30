@@ -502,6 +502,28 @@ func TestCompareReportsRefusesDifferentEnvironments(t *testing.T) {
 	}
 }
 
+func TestCompareReportsRefusesDifferentPythonRuntimes(t *testing.T) {
+	env := map[string]string{
+		"os": "linux", "architecture": "amd64", "go_runtime": "go1.24.2", "go_compiler": "gc",
+		"cpu_count": "8", "go_max_procs": "8", "baseline_language": "python",
+		"python_runtime": "Python 3.12.1", "rustc": "rustc 1.80.0", "rustc_flags": "release",
+	}
+	first := Report{
+		Project: "a", Component: "same", Workload: "same", Iterations: 5,
+		Correctness: "PASSED_FOR_CHECKSUM", Verdict: VerdictPort, Environment: env,
+	}
+	secondEnv := make(map[string]string, len(env))
+	for key, value := range env {
+		secondEnv[key] = value
+	}
+	secondEnv["python_runtime"] = "Python 3.13.0"
+	second := first
+	second.Environment = secondEnv
+	if !strings.Contains(CompareReports(first, second), "Python runtime metadata differs") {
+		t.Fatal("reports from different Python runtimes must not be compared")
+	}
+}
+
 func TestCompareReportsRefusesInconclusiveEvidence(t *testing.T) {
 	report := Report{
 		Project: "sample", Component: "operation", Workload: "fixed", Iterations: 10,

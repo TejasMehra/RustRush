@@ -30,12 +30,13 @@ var forbiddenRustPatterns = regexp.MustCompile(`(?m)(\binclude(_str|_bytes)?\s*!
 type buildRunner func(ctx context.Context, tool string, args []string, dir string, env []string) (string, error)
 
 type CandidateOptions struct {
-	BaselineDir   string
-	CandidateFile string
-	InputFile     string
-	Iterations    uint64
-	Repetitions   int
-	Timeout       time.Duration
+	BaselineDir      string
+	BaselineLanguage string
+	CandidateFile    string
+	InputFile        string
+	Iterations       uint64
+	Repetitions      int
+	Timeout          time.Duration
 	// AllowExecute is explicit consent to build and run the supplied programs.
 	AllowExecute bool
 	// Isolation is "process" (default; a timeout and minimal environment, not a
@@ -49,8 +50,8 @@ type CandidateOptions struct {
 	containerExec containerExecFn
 }
 
-// RunCandidate benchmarks a user-supplied Go main package against a user-supplied
-// single-file Rust candidate. Sources are copied; the originals are never modified.
+// RunCandidate benchmarks a user-supplied Go or Python baseline against a
+// user-supplied single-file Rust candidate. Sources are copied; originals are unchanged.
 func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error) {
 	if !options.AllowExecute {
 		return Report{}, errors.New("refusing to build and run supplied programs without --allow-execute; review the code first, since the default process-level isolation is a timeout and minimal environment, not a sandbox (see --isolation container)")
@@ -61,7 +62,23 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	if options.Timeout <= 0 {
 		return Report{}, errors.New("timeout must be positive")
 	}
-	baselineDir, err := validateBaselineDir(options.BaselineDir)
+	language := options.BaselineLanguage
+	if language == "" {
+		language = "go"
+	}
+	if language != "go" && language != "python" {
+		return Report{}, fmt.Errorf("unsupported baseline language %q; choose go or python", language)
+	}
+	if language == "python" && options.Isolation == IsolationContainer {
+		return Report{}, errors.New("Python baselines are not supported with container isolation; use --isolation process")
+	}
+	baselineDir := ""
+	var err error
+	if language == "go" {
+		baselineDir, err = validateBaselineDir(options.BaselineDir)
+	} else {
+		baselineDir, err = validatePythonBaseline(options.BaselineDir)
+	}
 	if err != nil {
 		return Report{}, err
 	}
@@ -84,13 +101,20 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	if build == nil {
 		build = runBuild
 	}
-	goTool := "go"
+	baselineTool := "go"
 	var engine *containerEngine
 	switch options.Isolation {
 	case "", IsolationProcess:
-		goTool, err = lookPath("go")
-		if err != nil {
-			return Report{}, errors.New("the go tool was not found on PATH; it is required to build the baseline")
+		if language == "go" {
+			baselineTool, err = lookPath("go")
+			if err != nil {
+				return Report{}, errors.New("the go tool was not found on PATH; it is required to build the baseline")
+			}
+		} else {
+			baselineTool, err = findPython(lookPath)
+			if err != nil {
+				return Report{}, err
+			}
 		}
 	case IsolationContainer:
 		engine, err = newContainerEngine(ctx, options.Container, options.lookPath, options.containerExec)
@@ -124,13 +148,27 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			return Report{}, fmt.Errorf("write container timer source: %w", err)
 		}
 	}
-	if err := copyTree(baselineDir, baselineCopy); err != nil {
-		return Report{}, err
+	if language == "go" {
+		if err := copyTree(baselineDir, baselineCopy); err != nil {
+			return Report{}, err
+		}
+	} else {
+		if err := os.MkdirAll(baselineCopy, 0o700); err != nil {
+			return Report{}, fmt.Errorf("create Python baseline directory: %w", err)
+		}
+		if err := copyFile(baselineDir, filepath.Join(baselineCopy, "baseline.py")); err != nil {
+			return Report{}, fmt.Errorf("copy Python baseline: %w", err)
+		}
 	}
 	if err := os.WriteFile(candidateCopy, candidateSource, 0o600); err != nil {
 		return Report{}, fmt.Errorf("copy candidate: %w", err)
 	}
 	var prefix []string
+	var candidatePrefix []string
+	baselineName := baselineMeasurementName(language)
+	if language == "python" {
+		prefix = []string{"-s", "-S", "-B", filepath.Join(baselineCopy, "baseline.py")}
+	}
 	if inputName != "" {
 		inputCopy := filepath.Join(tempDir, "input", inputName)
 		if err := os.MkdirAll(filepath.Dir(inputCopy), 0o700); err != nil {
@@ -139,7 +177,12 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		if err := copyFile(options.InputFile, inputCopy); err != nil {
 			return Report{}, err
 		}
-		prefix = []string{"--input", inputCopy}
+		inputArgs := []string{"--input", inputCopy}
+		prefix = append(prefix, inputArgs...)
+		candidatePrefix = append(candidatePrefix, inputArgs...)
+	}
+	if language == "go" {
+		candidatePrefix = append([]string(nil), prefix...)
 	}
 
 	suffix := ""
@@ -147,13 +190,16 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		suffix = ".exe"
 	}
 	baselineExe := filepath.Join(binDir, "baseline"+suffix)
+	if language == "python" {
+		baselineExe = baselineTool
+	}
 	candidateExe := filepath.Join(binDir, "candidate"+suffix)
 	redact := func(text string) string {
 		for _, pair := range [][2]string{
 			{tempDir, "[temporary directory]"}, {filepath.ToSlash(tempDir), "[temporary directory]"},
-			{goTool, "[go]"},
+			{baselineTool, "[" + language + "]"},
 		} {
-			if pair[0] == "go" {
+			if pair[0] == language {
 				continue
 			}
 			text = redactPath(text, pair[0], pair[1])
@@ -165,7 +211,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		SchemaVersion: SchemaVersion,
 		GeneratedAt:   time.Now().UTC(),
 		Project:       filepath.Base(baselineDir),
-		Component:     "user-supplied operation (Go main package vs. single-file Rust candidate)",
+		Component:     fmt.Sprintf("user-supplied operation (%s vs. single-file Rust candidate)", baselineName),
 		Workload: fmt.Sprintf("Both programs run with --iterations %d%s; stdout must be identical before timed repetitions",
 			options.Iterations, map[bool]string{true: " and the same --input file", false: ""}[inputName != ""]),
 		Iterations:  options.Iterations,
@@ -179,20 +225,42 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			"Equivalence is judged only by identical stdout for the supplied inputs; it does not prove semantic equivalence.",
 			"Process startup and output capture are included in each sample and can dominate short workloads.",
 		},
-		Reproduction: fmt.Sprintf("rustrush candidate --baseline <go-main-dir> --candidate <candidate.rs>%s --iterations %d --repetitions %d --timeout %s --allow-execute",
+		Reproduction: fmt.Sprintf("rustrush candidate --baseline-language %s --baseline <%s> --candidate <candidate.rs>%s --iterations %d --repetitions %d --timeout %s --allow-execute",
+			language, map[string]string{"go": "go-main-dir", "python": "baseline.py"}[language],
 			map[bool]string{true: " --input <file>", false: ""}[inputName != ""], options.Iterations, options.Repetitions, options.Timeout),
 		Assumptions: map[string]string{
 			"timing_scope":  "process startup plus workload execution",
 			"latency_scope": "one process wall-clock duration per repetition",
 			"warmup_runs":   "1 per implementation",
-			"trial_order":   "alternating Go/Rust then Rust/Go, starting with Go",
-			"go_build":      "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built from a temporary copy",
+			"trial_order":   "alternating baseline/Rust then Rust/baseline, starting with the baseline",
 			"isolation":     "process-level isolation: source copies, empty working directory, minimal environment, per-run timeout; not a sandbox",
 		},
+	}
+	report.Environment["baseline_language"] = language
+	if language == "go" {
+		report.Assumptions["go_build"] = "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built from a temporary copy"
+	} else {
+		report.Assumptions["python_runtime"] = "single-file baseline run with -s -S -B; site packages, user site, bytecode writes, and inherited Python environment are disabled"
+		pythonVersion, versionErr, versionTimedOut := runBuildPhase(ctx, options.Timeout, func(versionCtx context.Context) (string, error) {
+			return build(versionCtx, baselineTool, []string{"--version"}, workDir, minimalEnvironment())
+		})
+		if versionErr != nil {
+			if versionTimedOut {
+				return Report{}, fmt.Errorf("run Python interpreter %q: timed out", filepath.Base(baselineTool))
+			}
+			return Report{}, fmt.Errorf("run Python interpreter %q: %w: %s", filepath.Base(baselineTool), versionErr, strings.TrimSpace(pythonVersion))
+		}
+		report.Environment["python_runtime"] = strings.TrimSpace(pythonVersion)
+		if !strings.HasPrefix(report.Environment["python_runtime"], "Python 3.") {
+			return Report{}, fmt.Errorf("Python baseline requires Python 3; interpreter reported %q", report.Environment["python_runtime"])
+		}
 	}
 	runOptions := DemoOptions{
 		Iterations: options.Iterations, Repetitions: options.Repetitions, Timeout: options.Timeout,
 		SourceRoot: workDir, runProcess: options.runProcess,
+	}
+	if language == "python" {
+		runOptions.runEnv = pythonEnvironment()
 	}
 	inputDir := ""
 	if inputName != "" {
@@ -233,20 +301,31 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		return Measurement{Name: name, Status: status, Iterations: options.Iterations, Samples: []Sample{}, ErrorCount: count, Error: message}
 	}
 
-	output, err, buildTimedOut := runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
-		return build(buildCtx, goTool, []string{"build", "-o", baselineExe, "."}, baselineCopy, goBuildEnvironment())
-	})
+	output, err, buildTimedOut := "", error(nil), false
+	if language == "go" {
+		output, err, buildTimedOut = runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
+			return build(buildCtx, baselineTool, []string{"build", "-o", baselineExe, "."}, baselineCopy, goBuildEnvironment())
+		})
+	} else {
+		syntaxArgs := []string{"-s", "-S", "-B", "-c", "import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_bytes(), sys.argv[1], 'exec')", filepath.Join(baselineCopy, "baseline.py")}
+		output, err, buildTimedOut = runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
+			return build(buildCtx, baselineTool, syntaxArgs, baselineCopy, pythonEnvironment())
+		})
+	}
 	if err != nil {
 		status := "build_failed"
 		if buildTimedOut {
 			status = "timed_out"
 		}
+		if language == "python" {
+			output = pythonDiagnostic(output)
+		}
 		report.Measurements = []Measurement{
-			notRun("Go baseline", status, buildMessage(redact(output), redact(err.Error())), 1),
+			notRun(baselineName, status, buildMessage(redact(output), redact(err.Error())), 1),
 			notRun("Rust candidate", "not_run", "", 0),
 		}
-		report.Reason = "The Go baseline did not build; a performance comparison was not made."
-		report.Limitations = append(report.Limitations, "Baseline compilation failed; no measurements are available.")
+		report.Reason = "The " + language + " baseline was not ready; a performance comparison was not made."
+		report.Limitations = append(report.Limitations, "Baseline preparation failed; no measurements are available.")
 		return report, nil
 	}
 	if engine != nil && options.runProcess == nil {
@@ -271,7 +350,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 
 	rustc, lookErr := lookPath("rustc")
 	if lookErr != nil || rustc == "" {
-		baseline, measureErr := measure(ctx, runOptions, "Go baseline", baselineExe, prefix)
+		baseline, measureErr := measure(ctx, runOptions, baselineName, baselineExe, prefix)
 		baseline.Error = redact(baseline.Error)
 		report.Measurements = []Measurement{baseline, notRun("Rust candidate", "unavailable", "rustc was not found on PATH", 0)}
 		report.Limitations = append(report.Limitations, "Rust candidate was not built or run because rustc is unavailable; no cross-language comparison is reported.")
@@ -300,7 +379,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			status = "timed_out"
 		}
 		report.Measurements = []Measurement{
-			notRun("Go baseline", "not_run", "", 0),
+			notRun(baselineName, "not_run", "", 0),
 			notRun("Rust candidate", status, buildMessage(redact(strings.ReplaceAll(output, candidateCopy, "[candidate source]")), redact(err.Error())), 1),
 		}
 		report.Reason = "The Rust candidate did not build; a performance comparison was not made."
@@ -313,7 +392,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		containerRunner = engine.runner(binDir, inputDir)
 		runOptions.runProcess = containerRunner.processRunner()
 	}
-	baseline, candidate, correctnessPassed, pairErr := measurePair(ctx, runOptions, baselineExe, prefix, candidateExe, prefix)
+	baseline, candidate, correctnessPassed, pairErr := measurePairNamed(ctx, runOptions, baselineName, baselineExe, prefix, candidateExe, candidatePrefix)
 	if containerRunner != nil {
 		for key, value := range containerRunner.metadata() {
 			report.Environment[key] = value
@@ -460,6 +539,56 @@ func validateBaselineDir(path string) (string, error) {
 		}
 	}
 	return "", errors.New("baseline directory has no Go main package at its top level; add a small main package that accepts --iterations")
+}
+
+func validatePythonBaseline(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("a Python baseline file is required (--baseline)")
+	}
+	if strings.ToLower(filepath.Ext(path)) != ".py" {
+		return "", fmt.Errorf("Python baseline %q must be a single .py file", filepath.Base(path))
+	}
+	if err := requireRegularFile(path, "Python baseline"); err != nil {
+		return "", err
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve Python baseline: %w", err)
+	}
+	return absolute, nil
+}
+
+func findPython(lookPath func(string) (string, error)) (string, error) {
+	names := []string{"python3", "python"}
+	if runtime.GOOS == "windows" {
+		names = []string{"python", "python3"}
+	}
+	for _, name := range names {
+		if path, err := lookPath(name); err == nil && path != "" {
+			return path, nil
+		}
+	}
+	return "", errors.New("a Python 3 interpreter was not found on PATH; install Python 3 and rerun")
+}
+
+func pythonEnvironment() []string {
+	return append(minimalEnvironment(), "PYTHONHASHSEED=0", "PYTHONIOENCODING=utf-8", "PYTHONDONTWRITEBYTECODE=1")
+}
+
+func pythonDiagnostic(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.Contains(line, "Error:") {
+			return line
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func findModuleRoot(dir string) (string, error) {

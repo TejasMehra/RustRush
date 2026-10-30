@@ -1,7 +1,7 @@
 ![RustRush GitHub banner](assets/rustrush-github-banner.png)
 
-**Find out how much faster your backend hot paths could run in Rust before committing to a rewrite.**
-RustRush compares one Go operation with a Rust candidate. Results depend on the workload,
+**Find out how much faster your backend hot paths can run in Rust before committing to a rewrite.**
+RustRush compares one Go or Python operation with a Rust candidate. Results depend on the workload,
 implementation, compiler, and machine; a benchmark is evidence, not a promise of speedup.
 
 [![Go 1.22+](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](go.mod)
@@ -13,7 +13,7 @@ implementation, compiler, and machine; a benchmark is evidence, not a promise of
 
 RustRush is a local-first Go CLI for developers deciding whether to explore a Rust implementation of a specific backend operation. It checks matching program output before timing, runs paired repetitions, and reports when the available evidence is insufficient.
 
-It is for focused experiments, not automatic rewrites. You provide the Go baseline and the Rust candidate; RustRush does not translate code or profile production traffic. Results describe the tested operation and input, not an entire service.
+It is for focused experiments, not automatic rewrites. You provide a Go or Python baseline and the Rust candidate; RustRush does not translate code or profile production traffic. Results describe the tested operation and input, not an entire service.
 
 ## Features
 
@@ -21,15 +21,15 @@ It is for focused experiments, not automatic rewrites. You provide the Go baseli
 - **Paired measurements:** configurable repetitions alternate run order and record process durations, throughput, p50/p95/p99, variability, and process failure counts.
 - **Multiple timing modes:** reports identify local process timing or the optional container runner; incompatible timing modes are not compared.
 - **Local reports:** each run writes machine-readable JSON, a Markdown report, and an SVG summary.
-- **Optional Docker execution:** the candidate workflow can run in fail-closed, hardened containers with resource limits and no network access by default.
+- **Optional Docker execution:** Go-baseline candidate workflows can run in fail-closed, hardened containers with resource limits and no network access by default. Python baselines use process mode only.
 - **Assumption-driven ROI:** estimate cost scenarios from explicitly supplied workload, infrastructure, and engineering inputs.
 - **Project guidance:** inspect Go projects for candidate operations and classify other recognized project types for analysis only.
 
 ## How it works
 
 1. Choose one operation and a representative input. `guide` can identify Go entry points and rank source-pattern hypotheses; it does not profile or execute the project.
-2. Provide a Go `main` package and a dependency-free, single-file Rust candidate that implement the same operation.
-3. RustRush builds the programs and runs one warm-up for each. The same arguments and input are passed to both; mismatched output blocks timing.
+2. Provide either a Go `main` package or a single Python file, plus a dependency-free, single-file Rust candidate that implement the same operation.
+3. RustRush builds Go and Rust programs or syntax-checks the Python source, then runs one warm-up for each. The same workload arguments and input are passed to both; mismatched output blocks timing.
 4. After the correctness gate passes, RustRush collects paired repetitions in alternating order and aggregates the observations.
 5. Review the raw samples, warnings, environment, assumptions, and verdict in the generated reports.
 
@@ -69,25 +69,34 @@ go run ./cmd/rustrush doctor
 | Workflow | Requirements |
 |---|---|
 | Build, analyze, guide, or run the demo | Go 1.22+ |
-| Measure a complete Go-versus-Rust pair | `rustc` on `PATH`; Windows MSVC builds also need the Visual C++ build tools and Windows SDK |
-| `candidate --isolation process` | Go and Rust toolchains; this is process-level execution, not a sandbox |
-| `candidate --isolation container` | Docker CLI and daemon, plus the configured Go and Rust images already available locally |
+| `candidate --baseline-language go` | Go 1.22+, `rustc` on `PATH`; Go dependencies must be available offline |
+| `candidate --baseline-language python` | Python 3, `rustc` on `PATH`; one dependency-free `.py` file |
+| `candidate --isolation process` | Selected baseline runtime/compiler and Rust compiler; process-level execution, not a sandbox |
+| `candidate --isolation container` | Go baseline only; Docker CLI and daemon, plus configured Go and Rust images already available locally |
 | Build or serve the website | Node.js 20.15+ and npm 10+ |
 
 RustRush does not pull Docker images automatically. The container workflow is verified in Linux CI; Docker Desktop on Windows and macOS has not been verified.
+Python baselines currently use process mode only. Rust candidate compilation on Windows also requires the Visual C++ build tools and Windows SDK.
 
 Install [Go](https://go.dev/dl/) for the CLI. For Rust comparisons, install
 [Rust with rustup](https://rustup.rs/); Windows builds require the MSVC toolchain,
 Visual C++ build tools, and the Windows SDK.
+For Python comparisons, install [Python 3](https://www.python.org/downloads/) and make `python3` (or `python` on Windows) available on `PATH`.
 
 ## Running a comparison
 
-The supported executable comparison is a Go module containing a `main` package against a single-file, dependency-free Rust source file. Each program must accept `--iterations N`, print the same deterministic output for matching inputs, and accept `--input FILE` when an input file is supplied. Go dependencies must be available offline; the workflow does not fetch them.
+The executable comparison supports a Go module containing a top-level `main` package or a single Python `.py` file, against a single-file, dependency-free Rust source file. Each program must accept `--iterations N`, print the same deterministic output for matching inputs, and accept `--input FILE` when an input file is supplied. Go dependencies must be available offline; the workflow does not fetch them. Python baselines run with site initialization and user site packages disabled; external Python packages are not supported.
 
 The repository includes a working example:
 
 ```sh
 go run ./cmd/rustrush candidate --baseline examples/candidate-template/baseline --candidate examples/candidate-template/candidate.rs --input examples/candidate-template/input.txt --allow-execute --iterations 2000000 --repetitions 5
+```
+
+For Python, select the language and point `--baseline` at the source file:
+
+```sh
+go run ./cmd/rustrush candidate --baseline-language python --baseline examples/python-candidate-template/baseline.py --candidate examples/python-candidate-template/candidate.rs --input examples/python-candidate-template/input.txt --allow-execute --iterations 10000 --repetitions 5
 ```
 
 `--allow-execute` is required consent to build and run the supplied programs. RustRush copies source to a temporary directory and leaves the originals unchanged. The default process mode applies a timeout and minimal environment, but the processes still run with the user's permissions and filesystem/network access.
@@ -102,7 +111,7 @@ go run ./cmd/rustrush candidate --baseline examples/candidate-template/baseline 
 
 Other supported options include `--out DIR`, `--timeout DURATION`, and, for container mode, `--container-memory`, `--container-cpus`, and `--container-pids`. Run `go run ./cmd/rustrush candidate --help` for the complete current flag list.
 
-`guide` recognizes some Node.js, Python, Java/Kotlin, Rust, Ruby, and PHP project markers for **analysis-only** guidance. Those languages are not executable baselines in the paired candidate workflow. The guided candidate workflow currently targets Go modules with a `main` package; it does not claim support for arbitrary repositories.
+`guide` recognizes some Node.js, Python, Java/Kotlin, Rust, Ruby, and PHP project markers for **analysis-only** guidance. The candidate runner's Python support is a single-file adapter; `guide` does not yet rank Python operations or execute arbitrary Python projects.
 
 ## Understanding the report
 
@@ -128,7 +137,7 @@ Timing modes are intentionally distinct:
 - `process_end_to_end` is the default local mode. Each sample includes process startup, execution, and output capture.
 - `container_process_isolated` uses a fresh container per run. Its sample includes workload-process startup and output capture, but excludes container lifecycle, compilation, timer-helper startup, and Docker dispatch. Full invocation time and a derived overhead estimate are reported separately.
 
-Both modes report process-duration percentiles, not request-level latency distributions. Error counts describe failed benchmark process attempts, not application request errors. Rust and Go use different compilers and container images; host load, caches, and kernel state can affect measurements.
+Both modes report process-duration percentiles, not request-level latency distributions. Error counts describe failed benchmark process attempts, not application request errors. Rust and the selected Go or Python baseline use different compilers/runtimes; host load, caches, and kernel state can affect measurements. Python comparisons use process mode only.
 
 Read [Benchmark methodology](docs/benchmark-methodology.md) and [Report schema](docs/report-schema.md) for details. To render or compare saved reports:
 
@@ -190,7 +199,7 @@ The static production output is `website/dist`. Netlify uses `website/` as its b
 |---|---|
 | `cmd/rustrush/` | CLI commands and flags |
 | `internal/rustrush/` | Workloads, candidate execution, reports, analysis, ROI, and tests |
-| `examples/` | Built-in candidates, fixtures, and the Go/Rust candidate template |
+| `examples/` | Built-in candidates, fixtures, and Go/Python-to-Rust candidate templates |
 | `docs/` | Benchmark methodology, report schema, and ROI model |
 | `assets/` | Official brand artwork and favicon files |
 | `website/` | Static React, TypeScript, and Vite site |
@@ -199,9 +208,9 @@ The static production output is `website/dist`. Netlify uses `website/` as its b
 
 ## Roadmap and limitations
 
-RustRush does not currently run a real database workload, profile production applications, collect CPU or memory utilization, translate or generate candidates, support non-Go executable baselines, or calculate confidence intervals. Static operation rankings are hypotheses, not measured hotspots.
+RustRush does not currently run a real database workload, profile production applications, collect CPU or memory utilization, translate or generate candidates, support Python dependencies or Python container execution, or calculate confidence intervals. Static operation rankings are hypotheses, not measured hotspots.
 
-The tracked roadmap includes a real database-backed example, additional baseline and benchmark adapters, profiling integrations, stronger isolation options, richer report validation, and further statistical analysis. See [TODO.md](TODO.md) for the current status.
+The tracked roadmap includes a real database-backed example, additional benchmark adapters, profiling integrations, stronger isolation options, richer report validation, and further statistical analysis. See [TODO.md](TODO.md) for the current status.
 
 ## Contributing and license
 

@@ -12,6 +12,12 @@ The default is 2,000,000 iterations and five measured repetitions per implementa
 
 The Rust source is compiled with `rustc --edition=2021 -C opt-level=3`. Go uses the binary built by `go run` or `go build`; these compiler settings are not equivalent, and the report records the Go runtime and Rust compiler version when available.
 
+## Candidate baselines
+
+`candidate --baseline-language go` (the default) accepts a Go module whose top-level package is `main`. `candidate --baseline-language python` accepts one `.py` file and requires Python 3 on `PATH`. Python source is copied to a temporary directory, syntax-checked, and invoked with `-s -S -B`; it must use the standard library and implement the same `--iterations`/optional `--input` contract as the Rust candidate. RustRush passes both programs the same workload arguments and copied input, checks their nonempty stdout before timed repetitions, and uses the same paired order and aggregation. Python container execution is explicitly unsupported.
+
+Python process samples include interpreter startup, script execution, and output capture. Reports identify the baseline language and Python runtime version. Go and Python baseline builds/runs have different runtime costs, so interpret each comparison only for its selected workload and timing mode.
+
 ## Statistics
 
 Raw nanosecond process durations and outputs are retained in JSON for each measured repetition, along with each implementation's correctness-probe output. The correctness warm-up's duration is not retained as a benchmark sample. Throughput is calculated as `iterations / median(process duration)`. p50, p95, and p99 use the nearest-rank method over trial durations; with five trials p95/p99 are effectively the maximum observation. These are process-duration percentiles (in the default `process_end_to_end` mode including startup, argument parsing, workload, and output capture), not request-level or per-operation latency distributions. Error counts report failed or correctness-invalid benchmark attempts; the harness does not issue multiple requests within one process.

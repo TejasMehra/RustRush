@@ -85,14 +85,15 @@ type ROIAnalysis struct {
 
 func reportWallClockRatio(report Report) (*ROIReportLink, float64, bool) {
 	normalizeReportEvidence(&report)
+	baselineName := baselineMeasurementName(report.Environment["baseline_language"])
 	link := &ROIReportLink{
 		Verdict: report.Verdict, Correctness: report.Correctness,
-		ProcessWallClockMsg: "Ratio of median process durations (" + timingMode(report) + "); a proxy for CPU-time ratio, not a CPU measurement. It carries no confidence interval.",
+		ProcessWallClockMsg: "Ratio of median process durations (" + baselineName + " / Rust candidate; " + timingMode(report) + "); a proxy for CPU-time ratio, not a CPU measurement. It carries no confidence interval.",
 	}
 	var baseline, candidate Measurement
 	for _, measurement := range report.Measurements {
 		switch measurement.Name {
-		case "Go baseline":
+		case baselineName:
 			baseline = measurement
 		case "Rust candidate":
 			candidate = measurement

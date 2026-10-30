@@ -92,7 +92,41 @@ jobs:
             and (if .report.measured_values_used then .target_cpu_source == "estimated_from_report_wall_clock_ratio"
                  else .claim == "NO_SAVINGS_CLAIM" end)
           ' "$output/roi.json"
-
+      - name: Candidate workflow with Python baseline and Rust candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/rustrush-python-candidate"
+          python3 --version
+          go run ./cmd/rustrush candidate \
+            --baseline-language python \
+            --baseline examples/python-candidate-template/baseline.py \
+            --candidate examples/python-candidate-template/candidate.rs \
+            --input examples/python-candidate-template/input.txt \
+            --iterations 10000 --repetitions 3 --allow-execute \
+            --out "$output"
+          jq -e '
+            .schema_version == "1.1"
+            and .environment.baseline_language == "python"
+            and (.environment.python_runtime | startswith("Python 3."))
+            and .correctness == "PASSED_FOR_CHECKSUM"
+            and (.measurements | length == 2)
+            and .measurements[0].name == "Python baseline"
+            and .measurements[1].name == "Rust candidate"
+            and ([.measurements[].correctness_output] | unique | length == 1)
+            and all(.measurements[];
+              .status == "measured"
+              and .warmup_runs == 1
+              and .error_count == 0
+              and .repetitions == 3
+              and (.samples | length) == 3
+              and .p50_ns > 0
+              and .p95_ns > 0
+              and .p99_ns > 0
+              and .ops_per_sec > 0
+              and (. as $measurement | all($measurement.samples[]; .output == $measurement.correctness_output))
+            )
+          ' "$output/latest.json"
 
   container-isolation:
     runs-on: ubuntu-latest

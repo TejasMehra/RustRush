@@ -151,6 +151,179 @@ func TestRunCandidatePairedMeasurementPreservesSource(t *testing.T) {
 	}
 }
 
+func TestRunCandidatePythonBaselineUsesSharedCorrectnessGateAndReport(t *testing.T) {
+	f := newCandidateFixture(t)
+	python := filepath.Join(filepath.Dir(f.baseline), "baseline.py")
+	writeTestFile(t, python, "print('42')\n")
+	runs := &fakeRuns{baselineD: 2_000_000, candD: 1_000_000, candOut: "42"}
+	var syntaxChecked bool
+	options := f.options()
+	options.BaselineLanguage = "python"
+	options.BaselineDir = python
+	options.runProcess = runs.run
+	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
+		if filepath.Base(tool) == "python" || filepath.Base(tool) == "python.exe" {
+			if len(args) == 1 && args[0] == "--version" {
+				return "Python 3.12.0\n", nil
+			}
+			if strings.Contains(strings.Join(args, " "), "compile(pathlib.Path") {
+				syntaxChecked = true
+				return "", nil
+			}
+		}
+		return "", nil
+	}
+	report, err := RunCandidate(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !syntaxChecked {
+		t.Fatal("Python source must be syntax-checked before benchmarking")
+	}
+	if report.Correctness != "PASSED_FOR_CHECKSUM" || report.Verdict != VerdictPort {
+		t.Fatalf("unexpected report: %s %s %s", report.Correctness, report.Verdict, report.Reason)
+	}
+	if report.Environment["baseline_language"] != "python" || report.Environment["python_runtime"] != "Python 3.12.0" {
+		t.Fatalf("Python runtime metadata missing: %+v", report.Environment)
+	}
+	if report.Measurements[0].Name != "Python baseline" || report.Measurements[1].Name != "Rust candidate" {
+		t.Fatalf("unexpected measurement names: %+v", report.Measurements)
+	}
+	if !strings.Contains(RenderMarkdown(report), "Rust candidate vs Python baseline") {
+		t.Fatal("Markdown must identify the actual baseline language")
+	}
+	if len(runs.calls) != 8 {
+		t.Fatalf("expected two correctness probes and six timed runs, got %d", len(runs.calls))
+	}
+	for i, args := range runs.args {
+		if !strings.Contains(strings.Join(args, " "), "--iterations 100") {
+			t.Fatalf("run %d missing iteration contract: %v", i, args)
+		}
+		if runs.calls[i] == "python" {
+			joined := strings.Join(args, " ")
+			for _, required := range []string{"-s", "-S", "-B", "baseline.py", "--input"} {
+				if !strings.Contains(joined, required) {
+					t.Fatalf("Python baseline run missing %q: %v", required, args)
+				}
+			}
+		} else if strings.Contains(strings.Join(args, " "), "baseline.py") {
+			t.Fatalf("Rust candidate received Python interpreter arguments: %v", args)
+		}
+	}
+	if err := roundTripReport(report); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunCandidatePythonBaselineSyntaxFailureBlocksExecution(t *testing.T) {
+	f := newCandidateFixture(t)
+	python := filepath.Join(filepath.Dir(f.baseline), "baseline.py")
+	writeTestFile(t, python, "print(\n")
+	runs := &fakeRuns{}
+	options := f.options()
+	options.BaselineLanguage = "python"
+	options.BaselineDir = python
+	options.runProcess = runs.run
+	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
+		if filepath.Base(tool) == "python" && len(args) == 1 && args[0] == "--version" {
+			return "Python 3.12.0\n", nil
+		}
+		if strings.Contains(strings.Join(args, " "), "compile(pathlib.Path") {
+			return "SyntaxError: invalid syntax\nprint(\n", errors.New("exit status 1")
+		}
+		return "", nil
+	}
+	report, err := RunCandidate(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Measurements[0].Status != "build_failed" || report.Measurements[0].ErrorCount != 1 ||
+		report.Verdict != VerdictInconclusive || len(runs.calls) != 0 {
+		t.Fatalf("syntax-invalid baseline must block all program execution: %+v", report)
+	}
+	if !strings.Contains(report.Measurements[0].Error, "SyntaxError") {
+		t.Fatalf("syntax error should be reported: %+v", report.Measurements[0])
+	}
+	if strings.Contains(report.Measurements[0].Error, "print(") {
+		t.Fatal("syntax diagnostics must not copy source lines into the report")
+	}
+}
+
+func TestRunCandidatePythonBaselineFailureIsInconclusive(t *testing.T) {
+	f := newCandidateFixture(t)
+	python := filepath.Join(filepath.Dir(f.baseline), "baseline.py")
+	writeTestFile(t, python, "print('42')\n")
+	runs := &fakeRuns{candErr: context.DeadlineExceeded}
+	options := f.options()
+	options.BaselineLanguage = "python"
+	options.BaselineDir = python
+	options.runProcess = runs.run
+	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
+		if filepath.Base(tool) == "python" && len(args) == 1 && args[0] == "--version" {
+			return "Python 3.12.0\n", nil
+		}
+		return "", nil
+	}
+	report, err := RunCandidate(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Measurements[0].Name != "Python baseline" || report.Measurements[1].Status != "timed_out" ||
+		report.Verdict != VerdictInconclusive || report.ThroughputDeltaPercent != nil {
+		t.Fatalf("Python comparison failure must be inconclusive: %+v", report)
+	}
+}
+
+func TestRunCandidatePythonCorrectnessMismatchPreventsTimedTrials(t *testing.T) {
+	f := newCandidateFixture(t)
+	python := filepath.Join(filepath.Dir(f.baseline), "baseline.py")
+	writeTestFile(t, python, "print('42')\n")
+	runs := &fakeRuns{baselineD: 1_000_000, candOut: "different"}
+	options := f.options()
+	options.BaselineLanguage = "python"
+	options.BaselineDir = python
+	options.runProcess = runs.run
+	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
+		if filepath.Base(tool) == "python" && len(args) == 1 && args[0] == "--version" {
+			return "Python 3.12.0\n", nil
+		}
+		return "", nil
+	}
+	report, err := RunCandidate(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Correctness != "FAILED" || report.Verdict != VerdictInconclusive ||
+		report.ThroughputDeltaPercent != nil || len(runs.calls) != 2 {
+		t.Fatalf("Python output mismatch must prevent timed trials: %+v calls=%v", report, runs.calls)
+	}
+}
+
+func TestRunCandidatePythonBaselineRejectsContainerAndMissingRuntime(t *testing.T) {
+	f := newCandidateFixture(t)
+	python := filepath.Join(filepath.Dir(f.baseline), "baseline.py")
+	writeTestFile(t, python, "print('42')\n")
+
+	options := f.options()
+	options.BaselineLanguage = "python"
+	options.BaselineDir = python
+	options.Isolation = IsolationContainer
+	if _, err := RunCandidate(context.Background(), options); err == nil || !strings.Contains(err.Error(), "not supported with container") {
+		t.Fatalf("expected explicit Python container rejection, got %v", err)
+	}
+
+	options.Isolation = IsolationProcess
+	options.lookPath = func(name string) (string, error) {
+		if name == "go" || name == "rustc" {
+			return filepath.Join("fake", name), nil
+		}
+		return "", errors.New("not found")
+	}
+	if _, err := RunCandidate(context.Background(), options); err == nil || !strings.Contains(err.Error(), "Python 3 interpreter") {
+		t.Fatalf("expected missing Python runtime error, got %v", err)
+	}
+}
+
 // roundTripReport round-trips a report through the public writer/reader.
 func roundTripReport(report Report) error {
 	dir, err := os.MkdirTemp("", "rr-report-*")

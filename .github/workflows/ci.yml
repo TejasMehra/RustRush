@@ -116,7 +116,7 @@ jobs:
             --baseline examples/candidate-template/baseline \
             --candidate examples/candidate-template/candidate.rs \
             --input examples/candidate-template/input.txt \
-            --iterations 10000 --repetitions 3 --allow-execute \
+            --iterations 10000 --repetitions 3 --timeout 120s --allow-execute \
             --isolation container --out "$output"
           jq -e '
             .correctness == "PASSED_FOR_CHECKSUM"
@@ -128,6 +128,7 @@ jobs:
             and (.environment.timing_resolution_ns | contains("empirical minimum tick"))
             and all(.measurements[].samples[]; .timer_resolution_ns > 0)
             and all(.measurements[]; .status == "measured" and .error_count == 0)
+            and all(.measurements[]; .warmup_runs == 1 and (.samples | length) == 3)
           ' "$output/latest.json"
       - name: Daemon-unavailable path fails closed
         shell: bash

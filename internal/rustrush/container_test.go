@@ -110,28 +110,45 @@ func TestContainerConfigValidation(t *testing.T) {
 }
 
 type fakeDocker struct {
-	mu         sync.Mutex
-	calls      [][]string
-	failOn     string
-	daemonErr  error
-	missing    string
-	rmFail     bool
-	hang       bool
-	hangTimer  bool
-	runFailOn  string
-	noTiming   bool
-	zeroTiming bool
-	delay      time.Duration
-	runs       int
-	timingNS   []uint64
+	mu          sync.Mutex
+	calls       [][]string
+	failOn      string
+	daemonErr   error
+	missing     string
+	rmFail      bool
+	hang        bool
+	hangTimer   bool
+	runFailOn   string
+	noTiming    bool
+	zeroTiming  bool
+	delay       time.Duration
+	buildDelays map[string]time.Duration
+	runs        int
+	timingNS    []uint64
 }
 
 func (f *fakeDocker) exec(ctx context.Context, args []string) (string, string, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, append([]string(nil), args...))
 	f.mu.Unlock()
-	if f.delay > 0 && args[0] == "run" {
-		time.Sleep(f.delay)
+	if args[0] == "run" {
+		delay := f.delay
+		joined := strings.Join(args, " ")
+		for marker, buildDelay := range f.buildDelays {
+			if strings.Contains(joined, marker) {
+				delay = buildDelay
+				break
+			}
+		}
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return "", "container command canceled before completion", ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
 	switch args[0] {
 	case "version":
@@ -366,6 +383,77 @@ func TestContainerBuildFailureAndTimeout(t *testing.T) {
 	}
 	if !removed {
 		t.Fatal("timed-out container must be force-removed")
+	}
+}
+
+func TestContainerTimerBuildHasIndependentTimeoutAndRecovers(t *testing.T) {
+	skipIfRoot(t)
+	f := newCandidateFixture(t)
+	docker := &fakeDocker{buildDelays: map[string]time.Duration{
+		"/rr/out/baseline": 60 * time.Millisecond,
+		"/rr/out/timer":    60 * time.Millisecond,
+	}}
+	options := f.options()
+	options.Timeout = 100 * time.Millisecond
+	options.Isolation = IsolationContainer
+	options.containerExec = docker.exec
+
+	report, err := RunCandidate(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Correctness != "PASSED_FOR_CHECKSUM" || report.Verdict == VerdictInconclusive {
+		t.Fatalf("timer preparation did not recover after the baseline build: verdict=%s reason=%q measurements=%+v",
+			report.Verdict, report.Reason, report.Measurements)
+	}
+	if len(report.Measurements) != 2 || report.Measurements[0].Status != "measured" || report.Measurements[1].Status != "measured" {
+		t.Fatalf("both implementations should have measured samples: %+v", report.Measurements)
+	}
+}
+
+func TestContainerTimerBuildFailureIsReportedAndCleanedUp(t *testing.T) {
+	skipIfRoot(t)
+	f := newCandidateFixture(t)
+	docker := &fakeDocker{failOn: "-o /rr/out/timer"}
+	options := f.options()
+	options.Isolation = IsolationContainer
+	options.containerExec = docker.exec
+
+	report, err := RunCandidate(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := report.Measurements[0]
+	if baseline.Status != "failed" || baseline.ErrorCount != 1 || report.Verdict != VerdictInconclusive {
+		t.Fatalf("timer preparation failure must invalidate the comparison: %+v verdict=%s", baseline, report.Verdict)
+	}
+	if !strings.Contains(baseline.Error, "boom") || !strings.Contains(baseline.Error, "exit status 1") ||
+		!strings.Contains(report.Reason, "boom") || !strings.Contains(RenderMarkdown(report), "boom") {
+		t.Fatalf("timer preparation diagnostic was not surfaced: error=%q reason=%q", baseline.Error, report.Reason)
+	}
+
+	timerSourceRemoved := false
+	for _, args := range docker.callsNamed("run") {
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "-o /rr/out/timer") {
+			continue
+		}
+		if !strings.Contains(joined, " --rm ") {
+			t.Fatalf("failed timer build container must be removed automatically: %s", joined)
+		}
+		for _, arg := range args {
+			if strings.Contains(arg, "dst=/rr/src") {
+				for _, part := range strings.Split(arg, ",") {
+					if strings.HasPrefix(part, "src=") && strings.Contains(part, "timer-source") {
+						_, statErr := os.Stat(strings.TrimPrefix(part, "src="))
+						timerSourceRemoved = errors.Is(statErr, os.ErrNotExist)
+					}
+				}
+			}
+		}
+	}
+	if !timerSourceRemoved {
+		t.Fatal("timer source directory should be removed after preparation failure")
 	}
 }
 

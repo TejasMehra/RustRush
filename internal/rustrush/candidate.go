@@ -233,12 +233,12 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		return Measurement{Name: name, Status: status, Iterations: options.Iterations, Samples: []Sample{}, ErrorCount: count, Error: message}
 	}
 
-	buildCtx, cancelBuild := context.WithTimeout(ctx, options.Timeout)
-	defer cancelBuild()
-	output, err := build(buildCtx, goTool, []string{"build", "-o", baselineExe, "."}, baselineCopy, goBuildEnvironment())
+	output, err, buildTimedOut := runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
+		return build(buildCtx, goTool, []string{"build", "-o", baselineExe, "."}, baselineCopy, goBuildEnvironment())
+	})
 	if err != nil {
 		status := "build_failed"
-		if errors.Is(buildCtx.Err(), context.DeadlineExceeded) {
+		if buildTimedOut {
 			status = "timed_out"
 		}
 		report.Measurements = []Measurement{
@@ -250,14 +250,20 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		return report, nil
 	}
 	if engine != nil && options.runProcess == nil {
-		output, err = engine.buildTimer(buildCtx, timerSourceDir, binDir)
+		output, err, buildTimedOut = runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
+			return engine.buildTimer(buildCtx, timerSourceDir, binDir)
+		})
 		if err != nil {
-			message := redact(buildMessage(output, err.Error()))
+			message := redact(buildFailureMessage(output, err))
+			status := "failed"
+			if buildTimedOut {
+				status = "timed_out"
+			}
 			report.Measurements = []Measurement{
-				notRun("Go baseline", "failed", message, 1),
+				notRun("Go baseline", status, message, 1),
 				notRun("Rust candidate", "not_run", "", 0),
 			}
-			report.Reason = "The monotonic container timer could not be built; no performance measurements were collected."
+			report.Reason = "The monotonic container timer could not be prepared; no performance measurements were collected. Preparation error: " + message
 			report.Limitations = append(report.Limitations, "The benchmark timer could not be prepared; no comparison is valid.")
 			return report, nil
 		}
@@ -277,16 +283,20 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	}
 	report.Environment["rustc_flags"] = "--edition=2021 -C opt-level=3"
 	if engine != nil {
-		report.Environment["rustc"] = engine.rustVersion(buildCtx)
+		versionCtx, cancelVersion := context.WithTimeout(ctx, options.Timeout)
+		report.Environment["rustc"] = engine.rustVersion(versionCtx)
+		cancelVersion()
 	} else if options.build == nil {
 		if version, err := exec.CommandContext(ctx, rustc, "--version").Output(); err == nil {
 			report.Environment["rustc"] = strings.TrimSpace(string(version))
 		}
 	}
-	output, err = build(buildCtx, rustc, []string{"--edition=2021", "-C", "opt-level=3", candidateCopy, "-o", candidateExe}, filepath.Dir(candidateCopy), compilerEnvironment())
+	output, err, buildTimedOut = runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
+		return build(buildCtx, rustc, []string{"--edition=2021", "-C", "opt-level=3", candidateCopy, "-o", candidateExe}, filepath.Dir(candidateCopy), compilerEnvironment())
+	})
 	if err != nil {
 		status := "build_failed"
-		if errors.Is(buildCtx.Err(), context.DeadlineExceeded) {
+		if buildTimedOut {
 			status = "timed_out"
 		}
 		report.Measurements = []Measurement{
@@ -336,11 +346,29 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	return report, nil
 }
 
+func runBuildPhase(ctx context.Context, timeout time.Duration, build func(context.Context) (string, error)) (string, error, bool) {
+	buildCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := build(buildCtx)
+	return output, err, errors.Is(buildCtx.Err(), context.DeadlineExceeded)
+}
+
 func buildMessage(output, fallback string) string {
 	if output != "" {
 		return output
 	}
 	return fallback
+}
+
+func buildFailureMessage(output string, err error) string {
+	message := strings.TrimSpace(output)
+	if err == nil || strings.Contains(message, err.Error()) {
+		return message
+	}
+	if message != "" {
+		message += "\n"
+	}
+	return message + err.Error()
 }
 
 func goBuildEnvironment() []string {

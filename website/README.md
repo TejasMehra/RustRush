@@ -29,6 +29,8 @@ npm run preview
 The build is portable under a relative base path. Existing brand images are served
 from the repository's `assets/` directory; the alpha-transparent square logo is used
 in the navigation and footer, while the existing wide banner is the Open Graph image.
+The PNG and multi-size ICO favicons are generated from the same transparent logo mark
+and are copied to the production output by Vite.
 
 The primary website content lives in `src/App.tsx` and `src/styles.css`. Update the
 root README and methodology documents when CLI behavior changes; do not describe

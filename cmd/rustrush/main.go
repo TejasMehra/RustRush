@@ -63,7 +63,7 @@ Usage:
   rustrush doctor
   rustrush analyze [path]
   rustrush guide [--json] [path]
-  rustrush candidate --baseline PATH [--baseline-language go|python] --candidate FILE.rs [--input FILE] --allow-execute [--isolation process|container] [--iterations N] [--repetitions N] [--timeout D] [--out DIR]
+  rustrush candidate --baseline PATH [--baseline-language go|python|nodejs] --candidate FILE.rs [--input FILE] --allow-execute [--isolation process|container] [--iterations N] [--repetitions N] [--timeout D] [--out DIR]
   rustrush demo [--workload cpu|json|database-fixture] [--iterations N] [--repetitions N] [--out DIR]
   rustrush report <report.json>
   rustrush compare <report-a.json> <report-b.json>
@@ -73,7 +73,7 @@ Commands:
   doctor    Check local toolchain availability
   analyze   Inspect source files without executing them
   guide     Check whether your project is supported and list candidate operations (no execution)
-  candidate Benchmark a Go module or Python file against a single-file Rust candidate (needs --allow-execute)
+  candidate Benchmark a Go module, Python file, or Node.js file against a single-file Rust candidate (needs --allow-execute)
   demo      Run a built-in CPU, JSON, or database-fixture workload
   report    Render a saved JSON report as Markdown
   compare   Compare measured throughput from two saved reports
@@ -89,6 +89,7 @@ func doctor() error {
 	fmt.Printf("Rust compiler: %s\n", available(toolchain.Rustc, "not found"))
 	fmt.Printf("Go compiler: %s\n", available(toolchain.Go, "not found"))
 	fmt.Printf("Python runtime: %s\n", available(toolchain.Python, "not found"))
+	fmt.Printf("Node.js runtime: %s\n", available(toolchain.Node, "not found (Node.js 18+ required)"))
 	return nil
 }
 
@@ -189,8 +190,8 @@ func guide(args []string) error {
 func candidate(args []string) error {
 	flags := flag.NewFlagSet("candidate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	baseline := flags.String("baseline", "", "Go module root or single Python file, selected by --baseline-language")
-	baselineLanguage := flags.String("baseline-language", "go", "baseline language: go or python")
+	baseline := flags.String("baseline", "", "Go module root, single Python file, or single Node.js file, selected by --baseline-language")
+	baselineLanguage := flags.String("baseline-language", "go", "baseline language: go, python, or nodejs")
 	source := flags.String("candidate", "", "single-file dependency-free Rust candidate (.rs)")
 	input := flags.String("input", "", "optional input file passed to both programs as --input")
 	iterations := flags.Uint64("iterations", rustrush.DefaultIterations, "workload iterations per process")

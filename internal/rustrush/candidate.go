@@ -50,7 +50,7 @@ type CandidateOptions struct {
 	containerExec containerExecFn
 }
 
-// RunCandidate benchmarks a user-supplied Go or Python baseline against a
+// RunCandidate benchmarks a user-supplied Go, Python, or Node.js baseline against a
 // user-supplied single-file Rust candidate. Sources are copied; originals are unchanged.
 func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error) {
 	if !options.AllowExecute {
@@ -66,18 +66,22 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	if language == "" {
 		language = "go"
 	}
-	if language != "go" && language != "python" {
-		return Report{}, fmt.Errorf("unsupported baseline language %q; choose go or python", language)
+	language = normalizeBaselineLanguage(language)
+	if language != "go" && language != "python" && language != "nodejs" {
+		return Report{}, fmt.Errorf("unsupported baseline language %q; choose go, python, or nodejs", options.BaselineLanguage)
 	}
-	if language == "python" && options.Isolation == IsolationContainer {
-		return Report{}, errors.New("Python baselines are not supported with container isolation; use --isolation process")
+	if language != "go" && options.Isolation == IsolationContainer {
+		return Report{}, fmt.Errorf("%s baselines are not supported with container isolation; use --isolation process", baselineLabel(language))
 	}
 	baselineDir := ""
 	var err error
-	if language == "go" {
+	switch language {
+	case "go":
 		baselineDir, err = validateBaselineDir(options.BaselineDir)
-	} else {
+	case "python":
 		baselineDir, err = validatePythonBaseline(options.BaselineDir)
+	default:
+		baselineDir, err = validateNodeBaseline(options.BaselineDir)
 	}
 	if err != nil {
 		return Report{}, err
@@ -111,7 +115,11 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 				return Report{}, errors.New("the go tool was not found on PATH; it is required to build the baseline")
 			}
 		} else {
-			baselineTool, err = findPython(lookPath)
+			find := findPython
+			if language == "nodejs" {
+				find = findNode
+			}
+			baselineTool, err = find(lookPath)
 			if err != nil {
 				return Report{}, err
 			}
@@ -153,11 +161,15 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			return Report{}, err
 		}
 	} else {
-		if err := os.MkdirAll(baselineCopy, 0o700); err != nil {
-			return Report{}, fmt.Errorf("create Python baseline directory: %w", err)
+		scriptName := "baseline.py"
+		if language == "nodejs" {
+			scriptName = nodeScriptName(baselineDir)
 		}
-		if err := copyFile(baselineDir, filepath.Join(baselineCopy, "baseline.py")); err != nil {
-			return Report{}, fmt.Errorf("copy Python baseline: %w", err)
+		if err := os.MkdirAll(baselineCopy, 0o700); err != nil {
+			return Report{}, fmt.Errorf("create %s baseline directory: %w", baselineLabel(language), err)
+		}
+		if err := copyFile(baselineDir, filepath.Join(baselineCopy, scriptName)); err != nil {
+			return Report{}, fmt.Errorf("copy %s baseline: %w", baselineLabel(language), err)
 		}
 	}
 	if err := os.WriteFile(candidateCopy, candidateSource, 0o600); err != nil {
@@ -168,6 +180,9 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	baselineName := baselineMeasurementName(language)
 	if language == "python" {
 		prefix = []string{"-s", "-S", "-B", filepath.Join(baselineCopy, "baseline.py")}
+	}
+	if language == "nodejs" {
+		prefix = []string{filepath.Join(baselineCopy, nodeScriptName(baselineDir))}
 	}
 	if inputName != "" {
 		inputCopy := filepath.Join(tempDir, "input", inputName)
@@ -190,7 +205,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		suffix = ".exe"
 	}
 	baselineExe := filepath.Join(binDir, "baseline"+suffix)
-	if language == "python" {
+	if language != "go" {
 		baselineExe = baselineTool
 	}
 	candidateExe := filepath.Join(binDir, "candidate"+suffix)
@@ -226,7 +241,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 			"Process startup and output capture are included in each sample and can dominate short workloads.",
 		},
 		Reproduction: fmt.Sprintf("rustrush candidate --baseline-language %s --baseline <%s> --candidate <candidate.rs>%s --iterations %d --repetitions %d --timeout %s --allow-execute",
-			language, map[string]string{"go": "go-main-dir", "python": "baseline.py"}[language],
+			language, map[string]string{"go": "go-main-dir", "python": "baseline.py", "nodejs": "baseline.js"}[language],
 			map[bool]string{true: " --input <file>", false: ""}[inputName != ""], options.Iterations, options.Repetitions, options.Timeout),
 		Assumptions: map[string]string{
 			"timing_scope":  "process startup plus workload execution",
@@ -239,7 +254,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	report.Environment["baseline_language"] = language
 	if language == "go" {
 		report.Assumptions["go_build"] = "GOFLAGS=-mod=readonly, GOPROXY=off, GOTOOLCHAIN=local, built from a temporary copy"
-	} else {
+	} else if language == "python" {
 		report.Assumptions["python_runtime"] = "single-file baseline run with -s -S -B; site packages, user site, bytecode writes, and inherited Python environment are disabled"
 		pythonVersion, versionErr, versionTimedOut := runBuildPhase(ctx, options.Timeout, func(versionCtx context.Context) (string, error) {
 			return build(versionCtx, baselineTool, []string{"--version"}, workDir, minimalEnvironment())
@@ -254,6 +269,22 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		if !strings.HasPrefix(report.Environment["python_runtime"], "Python 3.") {
 			return Report{}, fmt.Errorf("Python baseline requires Python 3; interpreter reported %q", report.Environment["python_runtime"])
 		}
+	} else {
+		report.Assumptions["node_runtime"] = "single-file baseline run directly by node with a minimal environment; NODE_OPTIONS and NODE_PATH are not inherited; Node.js has no filesystem or network sandbox in this mode"
+		nodeVersion, versionErr, versionTimedOut := runBuildPhase(ctx, options.Timeout, func(versionCtx context.Context) (string, error) {
+			return build(versionCtx, baselineTool, []string{"--version"}, workDir, nodeEnvironment())
+		})
+		if versionErr != nil {
+			if versionTimedOut {
+				return Report{}, fmt.Errorf("run Node.js interpreter %q: timed out", filepath.Base(baselineTool))
+			}
+			return Report{}, fmt.Errorf("run Node.js interpreter %q: %w: %s", filepath.Base(baselineTool), versionErr, strings.TrimSpace(nodeVersion))
+		}
+		runtimeName, parseErr := parseNodeVersion(nodeVersion)
+		if parseErr != nil {
+			return Report{}, parseErr
+		}
+		report.Environment["node_runtime"] = runtimeName
 	}
 	runOptions := DemoOptions{
 		Iterations: options.Iterations, Repetitions: options.Repetitions, Timeout: options.Timeout,
@@ -261,6 +292,9 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 	}
 	if language == "python" {
 		runOptions.runEnv = pythonEnvironment()
+	}
+	if language == "nodejs" {
+		runOptions.runEnv = nodeEnvironment()
 	}
 	inputDir := ""
 	if inputName != "" {
@@ -306,10 +340,15 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		output, err, buildTimedOut = runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
 			return build(buildCtx, baselineTool, []string{"build", "-o", baselineExe, "."}, baselineCopy, goBuildEnvironment())
 		})
-	} else {
+	} else if language == "python" {
 		syntaxArgs := []string{"-s", "-S", "-B", "-c", "import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_bytes(), sys.argv[1], 'exec')", filepath.Join(baselineCopy, "baseline.py")}
 		output, err, buildTimedOut = runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
 			return build(buildCtx, baselineTool, syntaxArgs, baselineCopy, pythonEnvironment())
+		})
+	} else {
+		syntaxArgs := []string{"--check", filepath.Join(baselineCopy, nodeScriptName(baselineDir))}
+		output, err, buildTimedOut = runBuildPhase(ctx, options.Timeout, func(buildCtx context.Context) (string, error) {
+			return build(buildCtx, baselineTool, syntaxArgs, baselineCopy, nodeEnvironment())
 		})
 	}
 	if err != nil {
@@ -317,14 +356,14 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		if buildTimedOut {
 			status = "timed_out"
 		}
-		if language == "python" {
+		if language != "go" {
 			output = pythonDiagnostic(output)
 		}
 		report.Measurements = []Measurement{
 			notRun(baselineName, status, buildMessage(redact(output), redact(err.Error())), 1),
 			notRun("Rust candidate", "not_run", "", 0),
 		}
-		report.Reason = "The " + language + " baseline was not ready; a performance comparison was not made."
+		report.Reason = "The " + baselineLabel(language) + " baseline was not ready; a performance comparison was not made."
 		report.Limitations = append(report.Limitations, "Baseline preparation failed; no measurements are available.")
 		return report, nil
 	}
@@ -356,7 +395,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 		report.Limitations = append(report.Limitations, "Rust candidate was not built or run because rustc is unavailable; no cross-language comparison is reported.")
 		report.Reason = "The baseline produced measurements, but the Rust comparison could not be completed. Install Rust and rerun."
 		if measureErr != nil {
-			report.Limitations = append(report.Limitations, "The Go baseline failed or timed out.")
+			report.Limitations = append(report.Limitations, "The "+baselineLabel(language)+" baseline failed or timed out.")
 		}
 		return report, nil
 	}

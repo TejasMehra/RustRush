@@ -6,8 +6,8 @@ This status describes the checked-in implementation; items marked planned are no
 
 - [x] Go CLI with `doctor`, `analyze`, `guide`, `candidate`, `demo`, `report`, `compare`, and `roi`.
 - [x] `guide`: non-executing project-type detection (Go module = candidate workflow; other markers = analysis only; otherwise unsupported) and ranked Go candidate-operation hypotheses.
-- [x] `candidate`: explicit-consent workflow for a user Go main package or single-file Python baseline against a single-file Rust candidate. It copies source, syntax-checks Python, applies the shared correctness gate, and reuses paired measurements and reports. Go is supported in process or container mode; Python is process-mode only.
-- [x] Tests for guide classification, Go and Python baseline validation, unsupported isolation, consent, source preservation, failed/timed-out candidates, syntax failures, missing runtimes/compiler, and correctness-gate behaviour.
+- [x] `candidate`: explicit-consent workflow for a user Go main package or single-file Python or Node.js baseline against a single-file Rust candidate. It copies source, syntax-checks Python and Node.js, applies the shared correctness gate, and reuses paired measurements and reports. Go is supported in process or container mode; Python and Node.js are process-mode only.
+- [x] Tests for guide classification, Go, Python, and Node.js baseline validation, unsupported isolation, consent, source preservation, failed/timed-out candidates, syntax failures, missing runtimes/compiler, and correctness-gate behaviour.
 - [x] Markdown report keeps tables intact and surfaces measurement errors.
 - [x] Local source inventory for common languages and low-confidence loop, serialization, database, and network hypotheses.
 - [x] Dependency/build and credential-like path exclusions; analysis does not execute source.
@@ -15,6 +15,8 @@ This status describes the checked-in implementation; items marked planned are no
 - [x] Shared JSON integer-array fixture, Go transformation baseline, and dependency-free Rust candidate for the fixture shape.
 - [x] Shared CSV filter-and-aggregate mock with Go baseline, Rust candidate source, and explicit non-database limitations.
 - [x] Rust-enabled Ubuntu CI compiles all three candidates and asserts correctness, warm-up, error-count, and repeated-sample report fields; this does not claim a performance win.
+- [x] Node.js baseline adapter (Node 18+, `.js/.cjs/.mjs`, `node --check`, sanitized env) reusing the shared gate and paired engine; deterministic unit tests pass locally.
+- [ ] Node.js-to-Rust end-to-end run: the example and hosted CI step are added but unverified until CI runs with `rustc` (not available locally).
 - [x] Python-to-Rust example and Rust-enabled hosted CI workflow validate a successful correctness-gated report without asserting a speedup.
 - [x] Untimed cross-language correctness gate before timing; one warm-up and configurable paired repetitions with alternating run order.
 - [x] Raw process timings, throughput, process p50/p95/p99, process error counts, metadata, and inconclusive handling for invalid, failed, missing, or noisy evidence.
@@ -33,6 +35,7 @@ This status describes the checked-in implementation; items marked planned are no
 ## Planned
 
 - [ ] Add and validate a real local database-backed example with shared fixtures and correctness tests.
+- [ ] Add Node.js container execution (explicitly rejected today) only with a separately verified hardened image.
 - [ ] Add Python project guidance and Python container execution only with a separately verified hardened image and runtime contract.
 - [ ] Add Podman/rootless-engine support and a stronger boundary (gVisor/microVM) if untrusted code must be supported.
 - [ ] Add application-specific benchmark adapters beyond the `--iterations`/`--input` contract.

@@ -32,6 +32,7 @@ const (
 type Toolchain struct {
 	Go     string `json:"go,omitempty"`
 	Python string `json:"python,omitempty"`
+	Node   string `json:"node,omitempty"`
 	Rustc  string `json:"rustc,omitempty"`
 }
 
@@ -194,10 +195,7 @@ func normalizeReportEvidence(report *Report) {
 }
 
 func baselineMeasurementName(language string) string {
-	if language == "python" {
-		return "Python baseline"
-	}
-	return "Go baseline"
+	return baselineLabel(normalizeBaselineLanguage(language)) + " baseline"
 }
 
 func WriteReport(directory string, report Report) error {
@@ -260,10 +258,7 @@ func RenderMarkdown(report Report) string {
 	}
 	out += sampleNotes
 	if report.ThroughputDeltaPercent != nil && report.ThroughputDeltaOpsPerSec != nil {
-		baselineName := "Go baseline"
-		if language := report.Environment["baseline_language"]; language != "" {
-			baselineName = strings.ToUpper(language[:1]) + language[1:] + " baseline"
-		}
+		baselineName := baselineMeasurementName(report.Environment["baseline_language"])
 		out += fmt.Sprintf("\n**Measured throughput delta** (Rust candidate vs %s): %+.2f ops/s (%+.2f%%).\n", baselineName,
 			*report.ThroughputDeltaOpsPerSec, *report.ThroughputDeltaPercent)
 	}
@@ -342,6 +337,10 @@ func CompareReports(first, second Report) string {
 	if firstBaselineLanguage == "python" &&
 		(first.Environment["python_runtime"] == "" || first.Environment["python_runtime"] != second.Environment["python_runtime"]) {
 		return out + "Comparison unavailable: Python runtime metadata differs.\n"
+	}
+	if firstBaselineLanguage == "nodejs" &&
+		(first.Environment["node_runtime"] == "" || first.Environment["node_runtime"] != second.Environment["node_runtime"]) {
+		return out + "Comparison unavailable: Node.js runtime metadata differs.\n"
 	}
 	secondByName := make(map[string]Measurement, len(second.Measurements))
 	for _, measurement := range second.Measurements {

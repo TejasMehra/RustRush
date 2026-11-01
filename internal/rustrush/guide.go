@@ -75,9 +75,9 @@ func Guide(root string) (GuideResult, error) {
 		Project: analysis.Project, Support: SupportUnsupported, Analysis: analysis,
 		ProjectTypes: []ProjectType{}, MainPackages: []string{}, Candidates: []CandidateOperation{},
 		Limitations: []string{
-			"The guided project workflow targets Go modules. The candidate command separately accepts a single Python baseline file; other languages are not executable baselines.",
+			"The guided project workflow targets Go modules. The candidate command separately accepts a single Python or Node.js baseline file; other languages are not executable baselines.",
 			"Candidate operations are static hypotheses from source structure, not profiler output or evidence of a bottleneck.",
-			"Candidate execution needs a Go main package or a single Python file, plus a hand-written single-file, dependency-free Rust candidate that follow the documented command contract.",
+			"Candidate execution needs a Go main package, a single Python file, or a single Node.js file, plus a hand-written single-file, dependency-free Rust candidate that follow the documented command contract.",
 			"RustRush does not generate, translate, or upload code.",
 		},
 	}
@@ -108,7 +108,7 @@ func Guide(root string) (GuideResult, error) {
 	case SupportAnalysisOnly:
 		result.NextSteps = []string{
 			"Use the static findings to decide what to profile with your language's own profiler.",
-			"For a direct candidate run, use a single Python baseline with --baseline-language python; otherwise create a small Go main package or use the built-in demos.",
+			"For a direct candidate run, use a single Python baseline with --baseline-language python or a single Node.js baseline with --baseline-language nodejs; otherwise create a small Go main package or use the built-in demos.",
 		}
 	default:
 		result.NextSteps = []string{

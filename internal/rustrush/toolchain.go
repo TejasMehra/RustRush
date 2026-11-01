@@ -20,6 +20,16 @@ func CheckToolchain() Toolchain {
 			result.Python = strings.TrimSpace(string(output))
 		}
 	}
+	if path, err := findNode(exec.LookPath); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		output, runErr := exec.CommandContext(ctx, path, "--version").Output()
+		cancel()
+		if runErr == nil {
+			if runtimeName, parseErr := parseNodeVersion(string(output)); parseErr == nil {
+				result.Node = runtimeName
+			}
+		}
+	}
 	if path, err := exec.LookPath("rustc"); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

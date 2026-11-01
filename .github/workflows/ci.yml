@@ -127,6 +127,44 @@ jobs:
               and (. as $measurement | all($measurement.samples[]; .output == $measurement.correctness_output))
             )
           ' "$output/latest.json"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Candidate workflow with Node.js baseline and Rust candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/rustrush-nodejs-candidate"
+          node --version
+          go run ./cmd/rustrush candidate \
+            --baseline-language nodejs \
+            --baseline examples/nodejs-candidate-template/baseline.js \
+            --candidate examples/nodejs-candidate-template/candidate.rs \
+            --input examples/nodejs-candidate-template/input.txt \
+            --iterations 10000 --repetitions 3 --allow-execute \
+            --out "$output"
+          jq -e '
+            .schema_version == "1.1"
+            and .environment.baseline_language == "nodejs"
+            and (.environment.node_runtime | startswith("Node.js v"))
+            and .correctness == "PASSED_FOR_CHECKSUM"
+            and (.measurements | length == 2)
+            and .measurements[0].name == "Node.js baseline"
+            and .measurements[1].name == "Rust candidate"
+            and ([.measurements[].correctness_output] | unique | length == 1)
+            and all(.measurements[];
+              .status == "measured"
+              and .warmup_runs == 1
+              and .error_count == 0
+              and .repetitions == 3
+              and (.samples | length) == 3
+              and .p50_ns > 0
+              and .p95_ns > 0
+              and .p99_ns > 0
+              and .ops_per_sec > 0
+              and (. as $measurement | all($measurement.samples[]; .output == $measurement.correctness_output))
+            )
+          ' "$output/latest.json"
 
   container-isolation:
     runs-on: ubuntu-latest

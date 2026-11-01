@@ -1,6 +1,6 @@
 ![RustRush GitHub banner](assets/rustrush-github-banner.png)
 
-**Find out how much faster your backend hot paths can run in Rust before committing to a rewrite.**
+**Know before you rewrite: benchmark Go, Python and Node.js hot paths against Rust.**
 RustRush compares one Go, Python, or Node.js operation with a Rust candidate. Results depend on the workload,
 implementation, compiler, and machine; a benchmark is evidence, not a promise of speedup.
 
@@ -23,12 +23,13 @@ It is for focused experiments, not automatic rewrites. You provide a Go, Python,
 - **Local reports:** each run writes machine-readable JSON, a Markdown report, and an SVG summary.
 - **Optional Docker execution:** Go-baseline candidate workflows can run in fail-closed, hardened containers with resource limits and no network access by default. Python and Node.js baselines use process mode only.
 - **Assumption-driven ROI:** estimate cost scenarios from explicitly supplied workload, infrastructure, and engineering inputs.
+- **Three baseline languages:** Go, Python and Node.js share one correctness gate, paired-timing engine, and report format. Hosted CI runs all three against Rust candidates end to end.
 - **Project guidance:** inspect Go projects for candidate operations and classify other recognized project types for analysis only.
 
 ## How it works
 
 1. Choose one operation and a representative input. `guide` can identify Go entry points and rank source-pattern hypotheses; it does not profile or execute the project.
-2. Provide either a Go `main` package a single Python file, or a single Node.js file, plus a dependency-free, single-file Rust candidate that implement the same operation.
+2. Provide a Go `main` package, a single Python file, or a single Node.js file, plus a dependency-free, single-file Rust candidate that implements the same operation.
 3. RustRush builds Go and Rust programs or syntax-checks the Python/Node.js source, then runs one warm-up for each. The same workload arguments and input are passed to both; mismatched output blocks timing.
 4. After the correctness gate passes, RustRush collects paired repetitions in alternating order and aggregates the observations.
 5. Review the raw samples, warnings, environment, assumptions, and verdict in the generated reports.
@@ -86,7 +87,7 @@ For Python comparisons, install [Python 3](https://www.python.org/downloads/) an
 
 ## Running a comparison
 
-The executable comparison supports a Go module containing a top-level `main` package a single Python `.py` file, or a single Node.js `.js`/`.cjs`/`.mjs` file, against a single-file, dependency-free Rust source file. Each program must accept `--iterations N`, print the same deterministic output for matching inputs, and accept `--input FILE` when an input file is supplied. Go dependencies must be available offline; the workflow does not fetch them. Python baselines run with site initialization and user site packages disabled; external Python packages are not supported. Node.js baselines run with a minimal environment (no `NODE_OPTIONS`/`NODE_PATH`), use only built-in modules, and are not sandboxed in process mode.
+The executable comparison supports a Go module containing a top-level `main` package, a single Python `.py` file, or a single Node.js `.js`/`.cjs`/`.mjs` file, against a single-file, dependency-free Rust source file. Each program must accept `--iterations N`, print the same deterministic output for matching inputs, and accept `--input FILE` when an input file is supplied. Go dependencies must be available offline; the workflow does not fetch them. Python baselines run with site initialization and user site packages disabled; external Python packages are not supported. Node.js baselines run with a minimal environment (no `NODE_OPTIONS`/`NODE_PATH`), use only built-in modules, and are not sandboxed in process mode.
 
 The repository includes a working example:
 
@@ -118,7 +119,7 @@ go run ./cmd/rustrush candidate --baseline examples/candidate-template/baseline 
 
 Other supported options include `--out DIR`, `--timeout DURATION`, and, for container mode, `--container-memory`, `--container-cpus`, and `--container-pids`. Run `go run ./cmd/rustrush candidate --help` for the complete current flag list.
 
-`guide` recognizes some Node.js, Python, Java/Kotlin, Rust, Ruby, and PHP project markers for **analysis-only** guidance. The candidate runner's Python support is a single-file adapter; `guide` does not yet rank Python operations or execute arbitrary Python projects.
+`guide` recognizes some Node.js, Python, Java/Kotlin, Rust, Ruby, and PHP project markers for **analysis-only** guidance. The candidate runner's Python and Node.js support is a single-file adapter; `guide` does not yet rank Python or Node.js operations or execute arbitrary Python or Node.js projects.
 
 ## Understanding the report
 

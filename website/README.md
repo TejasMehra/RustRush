@@ -32,6 +32,6 @@ in the navigation and footer, while the existing wide banner is the Open Graph i
 The PNG and multi-size ICO favicons are generated from the same transparent logo mark
 and are copied to the production output by Vite.
 
-The primary website content lives in `src/App.tsx` and `src/styles.css`. Update the
+The site describes Go, Python and Node.js baselines (process mode for Python and Node.js; hardened containers for Go only). The primary website content lives in `src/App.tsx` and `src/styles.css`. Update the
 root README and methodology documents when CLI behavior changes; do not describe
 unimplemented browser execution as a website feature.

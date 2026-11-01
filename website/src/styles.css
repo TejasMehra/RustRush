@@ -358,6 +358,10 @@ h1 em, h2 em { color: var(--copper); font-weight: 400; }
 .ledger-type.measured { color: var(--green); }
 .ledger-type.modeled { color: var(--copper); }
 .ledger-type.inconclusive { color: #d78a72; }
+.ledger-type.lang { color: var(--ink); }
+.ledger-row code, .ledger-foot code { color: #efb78e; font-family: var(--mono); font-size: .9em; }
+.command-extra { border-top: 1px solid var(--line-soft); }
+.command-extra code { font-size: 10px; white-space: pre; }
 .ledger-row p { margin: -3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .ledger-foot { margin: 14px 0 0; color: var(--dim); font-size: 10px; line-height: 1.6; }
 
@@ -378,7 +382,7 @@ h1 em, h2 em { color: var(--copper); font-weight: 400; }
 .principle em { color: var(--muted); font-weight: 400; }
 
 .start-layout { padding-bottom: 42px; }
-.command-block { align-self: start; border: 1px solid var(--line); background: var(--panel); }
+.command-block { min-width: 0; align-self: start; border: 1px solid var(--line); background: var(--panel); }
 .command-heading {
   display: flex;
   justify-content: space-between;

@@ -6,15 +6,16 @@ const base = import.meta.env.BASE_URL;
 
 const sections = [
   { number: "01", label: "Method", href: "#method" },
-  { number: "02", label: "Evidence", href: "#evidence" },
-  { number: "03", label: "Start", href: "#try" },
+  { number: "02", label: "Languages", href: "#languages" },
+  { number: "03", label: "Evidence", href: "#evidence" },
+  { number: "04", label: "Start", href: "#try" },
 ];
 
 const methodSteps = [
   {
     number: "01",
     title: "Choose one operation",
-    body: "Use the guide to inspect a Go module. Its operation rankings come from source patterns, not production profiling; candidate runs also accept a single Python baseline file.",
+    body: "Pick a Go module, a single Python file, or a single Node.js file. The guide ranks Go operations from source patterns, not production profiling.",
   },
   {
     number: "02",
@@ -24,12 +25,12 @@ const methodSteps = [
   {
     number: "03",
     title: "Match the output",
-    body: "Both warm-ups receive the same arguments and input. Different output stops the comparison before timed trials.",
+    body: "Both programs receive the same arguments and input. Different output stops the comparison before any timed trial.",
   },
   {
     number: "04",
     title: "Read the measurements",
-    body: "Paired runs alternate order. Raw process samples, percentiles, throughput, and quality warnings remain in the report.",
+    body: "Warm-ups, then paired runs that alternate order. Raw process samples, p50/p95/p99, throughput, error counts, and quality warnings stay in the report.",
   },
 ];
 
@@ -48,7 +49,7 @@ function App() {
             <img src={`${base}rustrush-logo-transparent.png`} alt="" />
             <span>RustRush</span>
           </a>
-          <span className="header-note">A tool for the rewrite decision</span>
+          <span className="header-note">Know before you rewrite</span>
           <button
             className="menu-toggle"
             type="button"
@@ -65,6 +66,7 @@ function App() {
             aria-label="Main navigation"
           >
             <a href="#method" onClick={closeMenu}>Method</a>
+            <a href="#languages" onClick={closeMenu}>Languages</a>
             <a href="#evidence" onClick={closeMenu}>Reading a report</a>
             <a href="#try" onClick={closeMenu}>Try the demo</a>
             <a className="github-link" href={repo} target="_blank" rel="noreferrer" onClick={closeMenu}>
@@ -94,16 +96,17 @@ function App() {
               <div className="hero-copy">
                 <p className="folio"><span>RUSHRUSH</span><span>BENCHMARK NOTES&nbsp; / &nbsp;001</span></p>
                 <p className="hero-index">THE REWRITE QUESTION</p>
-                <h1 id="hero-title">Before you rewrite it, <em>measure it.</em></h1>
+                <h1 id="hero-title">Know before you <em>rewrite.</em></h1>
                 <p className="hero-lede">
-                  Put a Go operation or single Python file beside a Rust candidate. RustRush checks that
-                  their outputs match, then measures both before you commit to the work.
+                  Benchmark Go, Python and Node.js backends against Rust. Measure performance, validate
+                                    correctness, and evaluate whether a rewrite is worth it. You write the Rust candidate;
+                                    RustRush does not translate code.
                 </p>
                 <div className="hero-actions">
                   <a className="action-link" href="#try">
                     <span>Run the local demo</span><span aria-hidden="true">↓</span>
                   </a>
-                  <span className="action-note">Go 1.22+ · no API key</span>
+                  <span className="action-note">Go · Python · Node.js · no API key</span>
                 </div>
                 <div className="hero-fact">
                   <span className="fact-rule" />
@@ -133,7 +136,7 @@ function App() {
                     <span>ILLUSTRATION · NOT TO SCALE</span>
                   </div>
                   <svg viewBox="0 0 620 174" role="img" aria-labelledby="protocol-title protocol-desc">
-                    <title id="protocol-title">Go or Python and Rust benchmark protocol</title>
+                    <title id="protocol-title">Go, Python or Node.js baseline and Rust benchmark protocol</title>
                     <desc id="protocol-desc">
                       A schematic of both implementations receiving the same input,
                       passing through an output check, then entering timing. The
@@ -155,7 +158,7 @@ function App() {
                     <path className="svg-gate-link" d="M355 83V130" />
                     <path className="svg-clock" d="M512 76h16m-16 61h16" />
                     <path className="svg-tick" d="M543 65v22m14-22v22m-14 39v22m14-22v22" />
-                    <text className="svg-foot" x="92" y="168">WARM-UP OUTPUTS MUST MATCH BEFORE MEASURED TRIALS</text>
+                    <text className="svg-foot" x="92" y="168">OUTPUTS MUST MATCH BEFORE MEASURED TRIALS</text>
                   </svg>
                 </div>
 
@@ -204,8 +207,38 @@ function App() {
               </div>
             </section>
 
+            <section className="languages-section ruled-section" id="languages" aria-labelledby="languages-title">
+              <div className="section-marker"><span>02</span><span>LANGUAGES</span></div>
+              <div className="evidence-layout">
+                <div className="section-intro">
+                  <p className="section-kicker">One engine, three baselines</p>
+                  <h2 id="languages-title">Go, Python and Node.js, <em>one gate.</em></h2>
+                  <p>Each baseline is compared with a single-file Rust candidate through the same correctness gate, warm-up, paired timing, and report pipeline. The hosted CI workflow runs all three end to end.</p>
+                </div>
+                <div className="evidence-ledger">
+                  <div className="ledger-head">
+                    <span>BASELINE</span>
+                    <span>CONTRACT AND LIMITS</span>
+                  </div>
+                  <div className="ledger-row">
+                    <span className="ledger-type lang">GO</span>
+                    <p>A module with a top-level <code>main</code> package, built offline. Runs in process mode or in hardened Docker containers (no network, read-only root, non-root, resource limits).</p>
+                  </div>
+                  <div className="ledger-row">
+                    <span className="ledger-type lang">PYTHON</span>
+                    <p>One dependency-free <code>.py</code> file; Python 3 on PATH. Process mode only: a timeout and minimal environment, not a filesystem or network sandbox. Container mode is unsupported.</p>
+                  </div>
+                  <div className="ledger-row">
+                    <span className="ledger-type lang">NODE.JS</span>
+                    <p>One dependency-free <code>.js</code>, <code>.cjs</code> or <code>.mjs</code> file; Node.js 18+ on PATH. Process mode only: not a filesystem or network sandbox. Container mode is unsupported.</p>
+                  </div>
+                  <p className="ledger-foot">Every program takes <code>--iterations N</code> and an optional <code>--input FILE</code> and must print identical output. A conclusive comparison needs <code>rustc</code> on PATH.</p>
+                </div>
+              </div>
+            </section>
+
             <section className="evidence-section ruled-section" id="evidence" aria-labelledby="evidence-title">
-              <div className="section-marker"><span>02</span><span>EVIDENCE</span></div>
+              <div className="section-marker"><span>03</span><span>EVIDENCE</span></div>
               <div className="evidence-layout">
                 <div className="section-intro">
                   <p className="section-kicker">A report is not a forecast</p>
@@ -220,7 +253,7 @@ function App() {
                   </div>
                   <div className="ledger-row">
                     <span className="ledger-type measured">MEASURED</span>
-                    <p>Process wall time (including startup in the default mode), throughput, raw samples, and runtime details. Percentiles are not per-request latency.</p>
+                    <p>Process wall time (including runtime startup in the default mode), p50/p95/p99, throughput, error counts, raw samples, and Go, Python or Node.js runtime details. Percentiles are not per-request latency.</p>
                   </div>
                   <div className="ledger-row">
                     <span className="ledger-type modeled">MODELED</span>
@@ -228,7 +261,7 @@ function App() {
                   </div>
                   <div className="ledger-row inconclusive-row">
                     <span className="ledger-type inconclusive">INCONCLUSIVE</span>
-                    <p>Missing, failed, mismatched, noisy, or low-resolution evidence.</p>
+                    <p>Missing, failed, timed-out, mismatched, noisy, or low-resolution evidence. Rust is not assumed to be faster; a noisy run gives no speedup verdict.</p>
                   </div>
                   <p className="ledger-foot">No confidence intervals are computed. A matching checksum is not proof of full semantic equivalence.</p>
                 </div>
@@ -241,12 +274,12 @@ function App() {
             </aside>
 
             <section className="start-section ruled-section" id="try" aria-labelledby="start-title">
-              <div className="section-marker"><span>03</span><span>START HERE</span></div>
+              <div className="section-marker"><span>04</span><span>START HERE</span></div>
               <div className="start-layout">
                 <div className="section-intro">
                   <p className="section-kicker">Run it on your machine</p>
                   <h2 id="start-title">Start with the <em>demo.</em></h2>
-                  <p>Go 1.22 or newer is enough for the demo. Candidate runs accept Go or a single Python baseline; a conclusive comparison also needs `rustc` on your PATH.</p>
+                  <p>Go 1.22 or newer is enough for the demo. Candidate runs also accept a Python 3 or Node.js 18+ baseline; a conclusive comparison needs `rustc` on your PATH.</p>
                   <a className="inline-link" href={`${docs}docs/benchmark-methodology.md`}>Benchmark methodology <span aria-hidden="true">↗</span></a>
                 </div>
                 <div className="command-block">
@@ -262,11 +295,17 @@ function App() {
                     <code>results/latest.svg</code>
                   </div>
                   <p className="command-note">Without Rust, the baseline can still run. The report marks the missing candidate and returns <code>INCONCLUSIVE</code>.</p>
-                </div>
+                                    <pre className="command-extra"><code><span className="prompt">$</span> go run ./cmd/rustrush candidate --baseline-language nodejs \
+                      --baseline examples/nodejs-candidate-template/baseline.js \
+                      --candidate examples/nodejs-candidate-template/candidate.rs \
+                      --input examples/nodejs-candidate-template/input.txt \
+                      --iterations 10000 --repetitions 5 --allow-execute</code></pre>
+                                    <p className="command-note">Use <code>--baseline-language python</code>, or the default <code>go</code>, with the matching <code>examples/*-candidate-template</code> files. <code>--allow-execute</code> runs the supplied code with your permissions.</p>
+                                  </div>
               </div>
               <div className="container-note">
                 <span className="container-symbol" aria-hidden="true">[]</span>
-                <p><strong>Need container mode?</strong> It requires a working Docker environment and locally available images. Linux is verified; Docker Desktop on Windows and macOS is not.</p>
+                <p><strong>Need container mode?</strong> It applies to Go baselines only and requires a working Docker environment and locally available images. Linux is verified; Docker Desktop on Windows and macOS is not. Python and Node.js run in process mode.</p>
                 <a href={`${docs}SECURITY.md`}>Security limits <span aria-hidden="true">↗</span></a>
               </div>
             </section>
@@ -276,7 +315,7 @@ function App() {
                 <img src={`${base}rustrush-logo-transparent.png`} alt="" />
                 <span>RustRush</span>
               </a>
-              <p>A focused benchmark for one engineering decision.</p>
+              <p>Know before you rewrite: Go, Python and Node.js against Rust.</p>
               <nav aria-label="Footer links">
                 <a href={`${docs}README.md`}>Developer guide</a>
                 <a href={`${docs}docs/roi-model.md`}>ROI model</a>

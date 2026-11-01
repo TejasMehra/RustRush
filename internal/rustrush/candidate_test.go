@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,45 @@ func (r *fakeRuns) run(_ context.Context, exe string, args []string, dir string,
 	return Sample{DurationNS: r.baselineD, Output: "42"}, nil
 }
 
+// Discovery prefers python3 on Linux and python on Windows, so fakes must accept every interpreter name.
+func isPythonTool(tool string) bool {
+	switch strings.TrimSuffix(filepath.Base(tool), ".exe") {
+	case "python", "python3":
+		return true
+	}
+	return false
+}
+
+func TestFindPythonPrefersPlatformInterpreterAndFallsBack(t *testing.T) {
+	var asked []string
+	found := func(available ...string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			asked = append(asked, name)
+			for _, a := range available {
+				if a == name {
+					return "/bin/" + name, nil
+				}
+			}
+			return "", errors.New("not found")
+		}
+	}
+	first, second := "python3", "python"
+	if runtime.GOOS == "windows" {
+		first, second = "python", "python3"
+	}
+	got, err := findPython(found(first, second))
+	if err != nil || filepath.Base(got) != first || len(asked) != 1 {
+		t.Fatalf("expected %s first, got %q err=%v asked=%v", first, got, err, asked)
+	}
+	got, err = findPython(found(second))
+	if err != nil || filepath.Base(got) != second {
+		t.Fatalf("expected fallback to %s, got %q err=%v", second, got, err)
+	}
+	if _, err := findPython(found()); err == nil {
+		t.Fatal("missing interpreter must be an error")
+	}
+}
+
 func TestRunCandidateRequiresExplicitConsent(t *testing.T) {
 	f := newCandidateFixture(t)
 	options := f.options()
@@ -162,7 +202,7 @@ func TestRunCandidatePythonBaselineUsesSharedCorrectnessGateAndReport(t *testing
 	options.BaselineDir = python
 	options.runProcess = runs.run
 	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
-		if filepath.Base(tool) == "python" || filepath.Base(tool) == "python.exe" {
+		if isPythonTool(tool) {
 			if len(args) == 1 && args[0] == "--version" {
 				return "Python 3.12.0\n", nil
 			}
@@ -199,7 +239,7 @@ func TestRunCandidatePythonBaselineUsesSharedCorrectnessGateAndReport(t *testing
 		if !strings.Contains(strings.Join(args, " "), "--iterations 100") {
 			t.Fatalf("run %d missing iteration contract: %v", i, args)
 		}
-		if runs.calls[i] == "python" {
+		if isPythonTool(runs.calls[i]) {
 			joined := strings.Join(args, " ")
 			for _, required := range []string{"-s", "-S", "-B", "baseline.py", "--input"} {
 				if !strings.Contains(joined, required) {
@@ -225,7 +265,7 @@ func TestRunCandidatePythonBaselineSyntaxFailureBlocksExecution(t *testing.T) {
 	options.BaselineDir = python
 	options.runProcess = runs.run
 	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
-		if filepath.Base(tool) == "python" && len(args) == 1 && args[0] == "--version" {
+		if isPythonTool(tool) && len(args) == 1 && args[0] == "--version" {
 			return "Python 3.12.0\n", nil
 		}
 		if strings.Contains(strings.Join(args, " "), "compile(pathlib.Path") {
@@ -259,7 +299,7 @@ func TestRunCandidatePythonBaselineFailureIsInconclusive(t *testing.T) {
 	options.BaselineDir = python
 	options.runProcess = runs.run
 	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
-		if filepath.Base(tool) == "python" && len(args) == 1 && args[0] == "--version" {
+		if isPythonTool(tool) && len(args) == 1 && args[0] == "--version" {
 			return "Python 3.12.0\n", nil
 		}
 		return "", nil
@@ -284,7 +324,7 @@ func TestRunCandidatePythonCorrectnessMismatchPreventsTimedTrials(t *testing.T) 
 	options.BaselineDir = python
 	options.runProcess = runs.run
 	options.build = func(_ context.Context, tool string, args []string, _ string, _ []string) (string, error) {
-		if filepath.Base(tool) == "python" && len(args) == 1 && args[0] == "--version" {
+		if isPythonTool(tool) && len(args) == 1 && args[0] == "--version" {
 			return "Python 3.12.0\n", nil
 		}
 		return "", nil

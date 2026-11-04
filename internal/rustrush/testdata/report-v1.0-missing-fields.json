@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2025-01-01T00:00:00Z",
+  "project": "RustRush",
+  "component": "deterministic integer-mixing loop",
+  "workload": "historical fixture",
+  "iterations": 10,
+  "correctness": "PASSED_FOR_CHECKSUM",
+  "verdict": "PORT",
+  "reason": "historical reason text",
+  "throughput_delta_ops_per_sec": 25.0,
+  "throughput_delta_percent": 25.0,
+  "environment": {
+    "go": "go1.22.0",
+    "os": "linux"
+  },
+  "measurements": [
+    {
+      "name": "Go baseline",
+      "status": "measured",
+      "repetitions": 3,
+      "iterations": 10,
+      "median_ns": 100000000,
+      "ops_per_sec": 100.0,
+      "samples": []
+    },
+    {
+      "name": "Rust candidate",
+      "status": "measured",
+      "repetitions": 3,
+      "iterations": 10,
+      "median_ns": 80000000,
+      "ops_per_sec": 125.0,
+      "samples": []
+    }
+  ],
+  "limitations": [
+    "historical limitation"
+  ],
+  "reproduction": "go run ./cmd/rustrush demo"
+}

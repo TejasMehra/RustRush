@@ -5,9 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"time"
 
@@ -29,6 +29,9 @@ func run(args []string) error {
 
 	switch args[0] {
 	case "doctor":
+		if len(args) > 1 {
+			return fmt.Errorf("doctor takes no arguments, got %q; usage: rustrush doctor", args[1:])
+		}
 		return doctor()
 	case "analyze":
 		return analyze(args[1:])
@@ -63,14 +66,14 @@ Usage:
   rustrush doctor
   rustrush analyze [path]
   rustrush guide [--json] [path]
-  rustrush candidate --baseline PATH [--baseline-language go|python|nodejs] --candidate FILE.rs [--input FILE] --allow-execute [--isolation process|container] [--iterations N] [--repetitions N] [--timeout D] [--out DIR]
-  rustrush demo [--workload cpu|json|database-fixture] [--iterations N] [--repetitions N] [--out DIR]
+  rustrush candidate --baseline PATH [--baseline-language go|python|nodejs] --candidate FILE.rs [--input FILE] --allow-execute [--isolation process|container] [--iterations N] [--repetitions N] [--timeout D] [--out DIR] [--verbose]
+  rustrush demo [--workload cpu|json|database-fixture] [--iterations N] [--repetitions N] [--out DIR] [--verbose]
   rustrush report <report.json>
   rustrush compare <report-a.json> <report-b.json>
   rustrush roi [assumption flags]
 
 Commands:
-  doctor    Check local toolchain availability
+  doctor    Check which tools are installed and which comparisons you can run
   analyze   Inspect source files without executing them
   guide     Check whether your project is supported and list candidate operations (no execution)
   candidate Benchmark a Go module, Python file, or Node.js file against a single-file Rust candidate (needs --allow-execute)
@@ -84,20 +87,18 @@ candidate and produces an INCONCLUSIVE report rather than inventing a comparison
 }
 
 func doctor() error {
-	toolchain := rustrush.CheckToolchain()
-	fmt.Printf("Go runtime: %s (%s/%s)\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	fmt.Printf("Rust compiler: %s\n", available(toolchain.Rustc, "not found"))
-	fmt.Printf("Go compiler: %s\n", available(toolchain.Go, "not found"))
-	fmt.Printf("Python runtime: %s\n", available(toolchain.Python, "not found"))
-	fmt.Printf("Node.js runtime: %s\n", available(toolchain.Node, "not found (Node.js 18+ required)"))
-	return nil
+	return runDoctor(os.Stdout, rustrush.DefaultDoctorProbe())
 }
 
-func available(value, fallback string) string {
-	if value == "" {
-		return fallback
+// runDoctor prints the report first, then fails only when no Rust comparison
+// can run. Missing Go, Python, Node.js or Docker never changes the result.
+func runDoctor(w io.Writer, probe rustrush.DoctorProbe) error {
+	report := rustrush.CheckEnvironment(probe)
+	fmt.Fprint(w, rustrush.RenderDoctor(report))
+	if !report.CanCompare() {
+		return errors.New("Rust is not ready, so no comparison can run; see the environment check above")
 	}
-	return value
+	return nil
 }
 
 func analyze(args []string) error {
@@ -199,6 +200,7 @@ func candidate(args []string) error {
 	timeout := flags.Duration("timeout", 30*time.Second, "maximum time for each build and each process run")
 	outDir := flags.String("out", "results", "directory for generated reports")
 	allow := flags.Bool("allow-execute", false, "consent to building and running the supplied programs locally")
+	verbose := flags.Bool("verbose", false, "print the complete technical report instead of the short summary")
 	isolation := flags.String("isolation", rustrush.IsolationProcess, "process (timeout + minimal environment, not a sandbox) or container (hardened Docker; fails closed)")
 	goImage := flags.String("container-go-image", rustrush.DefaultContainerGoImage, "local Docker image with the Go toolchain (never pulled implicitly)")
 	rustImage := flags.String("container-rust-image", rustrush.DefaultContainerRustImage, "local Docker image with rustc (never pulled implicitly)")
@@ -227,12 +229,7 @@ func candidate(args []string) error {
 	if err := rustrush.WriteReport(*outDir, report); err != nil {
 		return err
 	}
-	fmt.Print(rustrush.RenderMarkdown(report))
-	fmt.Printf("\nReports written to %s, %s and %s\n",
-		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"), filepath.Join(*outDir, "latest.svg"))
-	if report.Verdict == rustrush.VerdictInconclusive {
-		fmt.Println("The comparison is inconclusive; see limitations in the report.")
-	}
+	printBenchmarkResult(os.Stdout, report, *outDir, *verbose)
 	return nil
 }
 
@@ -244,6 +241,7 @@ func demo(args []string) error {
 	repetitions := flags.Int("repetitions", rustrush.DefaultRepetitions, "measurement trials per implementation")
 	outDir := flags.String("out", "results", "directory for generated reports")
 	timeout := flags.Duration("timeout", 30*time.Second, "maximum time allowed for each workload process")
+	verbose := flags.Bool("verbose", false, "print the complete technical report instead of the short summary")
 	help, err := parseFlags(flags, args)
 	if err != nil {
 		return err
@@ -278,12 +276,7 @@ func demo(args []string) error {
 	if err := rustrush.WriteReport(*outDir, report); err != nil {
 		return err
 	}
-	fmt.Print(rustrush.RenderMarkdown(report))
-	fmt.Printf("\nReports written to %s, %s and %s\n",
-		filepath.Join(*outDir, "latest.json"), filepath.Join(*outDir, "latest.md"), filepath.Join(*outDir, "latest.svg"))
-	if report.Verdict == rustrush.VerdictInconclusive {
-		fmt.Println("The comparison is inconclusive; see limitations in the report.")
-	}
+	printBenchmarkResult(os.Stdout, report, *outDir, *verbose)
 	return nil
 }
 

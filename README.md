@@ -64,12 +64,25 @@ Build the CLI from the repository root:
 
 ```sh
 go build ./cmd/rustrush
-go run ./cmd/rustrush doctor
+rustrush doctor        # or: go run ./cmd/rustrush doctor
 ```
+
+### What `rustrush doctor` checks
+
+`doctor` reports each tool as `Ready`, `Not found`, `Needs newer version`, or `Found but could not run`, then lists the comparisons you can run now and what to install to unlock the rest. It only runs short version commands (3-second limit); it never runs your code, starts containers, or pulls images.
+
+- **Rust (`rustc`)** is required for every comparison, including the built-in demo. No minimum Rust version is enforced.
+- **Go, Python 3, and Node.js 18+** are alternatives to one another: you need only the one matching your baseline. The built-in demo uses RustRush itself as its baseline and needs none of them.
+- **Docker** is optional and relevant only to `--isolation container`. `doctor` checks that the CLI exists; it does not verify the daemon or local images, so "CLI found" does not mean container mode is ready (container mode still fails closed if its prerequisites are missing).
+- The Go 1.22+ requirement is documented for building RustRush and for Go baselines; `doctor` reports the Go version it finds but does not enforce a minimum.
+- Windows Rust compilation also needs the MSVC toolchain and Windows SDK, which `doctor` cannot detect.
+
+Exit codes: `0` when Rust is ready (at least the demo can run); `1` when Rust is missing, cannot run, or times out. Missing Go, Python, Node.js, or Docker never changes the exit code.
 
 | Workflow | Requirements |
 |---|---|
-| Build, analyze, guide, or run the demo | Go 1.22+ |
+| Build the CLI, `analyze`, `guide` | Go 1.22+ (to build); `analyze` and `guide` need no other tools |
+| Built-in `demo` | `rustc` on `PATH` (without it the demo records an INCONCLUSIVE report) |
 | `candidate --baseline-language go` | Go 1.22+, `rustc` on `PATH`; Go dependencies must be available offline |
 | `candidate --baseline-language python` | Python 3, `rustc` on `PATH`; one dependency-free `.py` file |
 | `candidate --baseline-language nodejs` | Node.js 18+, `rustc` on `PATH`; one dependency-free `.js`/`.cjs`/`.mjs` file |

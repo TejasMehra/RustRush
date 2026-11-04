@@ -378,7 +378,7 @@ func RunCandidate(ctx context.Context, options CandidateOptions) (Report, error)
 				status = "timed_out"
 			}
 			report.Measurements = []Measurement{
-				notRun("Go baseline", status, message, 1),
+				notRun(baselineName, status, message, 1),
 				notRun("Rust candidate", "not_run", "", 0),
 			}
 			report.Reason = "The monotonic container timer could not be prepared; no performance measurements were collected. Preparation error: " + message
@@ -598,11 +598,19 @@ func validatePythonBaseline(path string) (string, error) {
 }
 
 func findPython(lookPath func(string) (string, error)) (string, error) {
-	names := []string{"python3", "python"}
-	if runtime.GOOS == "windows" {
-		names = []string{"python", "python3"}
+	return findPythonFor(runtime.GOOS, lookPath)
+}
+
+// pythonNames returns interpreter names in lookup order for the given OS.
+func pythonNames(goos string) []string {
+	if goos == "windows" {
+		return []string{"python", "python3"}
 	}
-	for _, name := range names {
+	return []string{"python3", "python"}
+}
+
+func findPythonFor(goos string, lookPath func(string) (string, error)) (string, error) {
+	for _, name := range pythonNames(goos) {
 		if path, err := lookPath(name); err == nil && path != "" {
 			return path, nil
 		}

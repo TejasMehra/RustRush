@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2025-01-01T00:00:00Z",
+  "project": "RustRush",
+  "component": "deterministic integer-mixing loop",
+  "workload": "historical fixture",
+  "iterations": 10,
+  "correctness": "PASSED_FOR_CHECKSUM",
+  "verdict": "PORT",
+  "reason": "historical reason text",
+  "throughput_delta_ops_per_sec": 25.0,
+  "throughput_delta_percent": 25.0,
+  "environment": {
+    "go": "go1.22.0",
+    "os": "linux"
+  },
+  "measurements": [
+    {
+      "name": "Go baseline",
+      "status": "measured",
+      "repetitions": 3,
+      "iterations": 10,
+      "samples": [
+        {
+          "duration_ns": 100000000,
+          "output": "4242"
+        },
+        {
+          "duration_ns": 101000000,
+          "output": "4242"
+        },
+        {
+          "duration_ns": 99000000,
+          "output": "4242"
+        }
+      ],
+      "median_ns": 100000000,
+      "p50_ns": 100000000,
+      "p95_ns": 101000000,
+      "p99_ns": 101000000,
+      "ops_per_sec": 100.0,
+      "coefficient_of_variation": 0.00816496580927726
+    },
+    {
+      "name": "Rust candidate",
+      "status": "measured",
+      "repetitions": 3,
+      "iterations": 10,
+      "samples": [
+        {
+          "duration_ns": 80000000,
+          "output": "4242"
+        },
+        {
+          "duration_ns": 81000000,
+          "output": "4242"
+        },
+        {
+          "duration_ns": 79000000,
+          "output": "4242"
+        }
+      ],
+      "median_ns": 80000000,
+      "p50_ns": 80000000,
+      "p95_ns": 81000000,
+      "p99_ns": 81000000,
+      "ops_per_sec": 125.0,
+      "coefficient_of_variation": 0.010206207261596574
+    }
+  ],
+  "limitations": [
+    "historical limitation"
+  ],
+  "reproduction": "go run ./cmd/rustrush demo"
+}

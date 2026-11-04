@@ -228,7 +228,10 @@ func WriteReport(directory string, report Report) error {
 
 func RenderMarkdown(report Report) string {
 	normalizeReportEvidence(&report)
-	out := fmt.Sprintf("# RustRush benchmark report\n\n- **Schema:** %s\n- **Generated:** %s\n- **Project:** %s\n- **Component:** %s\n- **Verdict:** `%s`\n- **Correctness gate:** %s\n\n## Workload\n\n%s\n\nIterations per process: %d. Reproduction: `%s`.\n\n%s\n\n## Measurements\n\n| Implementation | Status | Trials | Warm-ups | Errors | Median/p50 (ms) | p95 (ms) | p99 (ms) | Ops/sec | CV |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+	summary := SummarizeResult(report)
+	out := fmt.Sprintf("# RustRush benchmark report\n\n## Result\n\n**%s**\n\n%s\n\n**Next step:** %s\n\n**Keep in mind:** %s\n\n## Details\n\n",
+		summary.Headline, summary.Explanation, summary.NextStep, summary.Limitation)
+	out += fmt.Sprintf("- **Schema:** %s\n- **Generated:** %s\n- **Project:** %s\n- **Component:** %s\n- **Verdict:** `%s`\n- **Correctness gate:** %s\n\n## Workload\n\n%s\n\nIterations per process: %d. Reproduction: `%s`.\n\n%s\n\n## Measurements\n\n| Implementation | Status | Trials | Warm-ups | Errors | Median/p50 (ms) | p95 (ms) | p99 (ms) | Ops/sec | CV |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
 		report.SchemaVersion, report.GeneratedAt.UTC().Format(time.RFC3339), report.Project, report.Component, report.Verdict, report.Correctness, report.Workload, report.Iterations, report.Reproduction, timingDescription(report))
 	sampleNotes := ""
 	for _, measurement := range report.Measurements {

@@ -411,6 +411,60 @@ func TestContainerTimerBuildHasIndependentTimeoutAndRecovers(t *testing.T) {
 	}
 }
 
+// TestContainerTimerPreparationFailureNamesSelectedBaseline exercises the real
+// RunCandidate path. Container isolation currently supports only Go baselines;
+// Python and Node.js attribution is covered in summary_test.go and by the
+// shared baselineName used when recording the measurement.
+func TestContainerTimerPreparationFailureNamesSelectedBaseline(t *testing.T) {
+	skipIfRoot(t)
+	cases := []struct {
+		language, wantName, wantProgram string
+	}{
+		{"go", "Go baseline", "Go"},
+	}
+	for _, tc := range cases {
+		for _, timeout := range []bool{false, true} {
+			name := tc.language + "/failure"
+			docker := &fakeDocker{failOn: "-o /rr/out/timer"}
+			if timeout {
+				name = tc.language + "/timeout"
+				docker = &fakeDocker{buildDelays: map[string]time.Duration{"-o /rr/out/timer": time.Second}}
+			}
+			t.Run(name, func(t *testing.T) {
+				f := newCandidateFixture(t)
+				options := f.options()
+				options.BaselineLanguage = tc.language
+				options.Isolation = IsolationContainer
+				options.containerExec = docker.exec
+				if timeout {
+					options.Timeout = 100 * time.Millisecond
+				}
+
+				report, err := RunCandidate(context.Background(), options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(report.Measurements) != 2 || report.Measurements[0].Name != tc.wantName ||
+					report.Measurements[1].Name != "Rust candidate" || report.Measurements[1].Status != "not_run" {
+					t.Fatalf("unexpected measurements: %+v", report.Measurements)
+				}
+				wantStatus := "failed"
+				if timeout {
+					wantStatus = "timed_out"
+				}
+				if report.Measurements[0].Status != wantStatus || report.Measurements[0].ErrorCount != 1 || report.Verdict != VerdictInconclusive {
+					t.Fatalf("status must be preserved: %+v verdict=%s", report.Measurements[0], report.Verdict)
+				}
+				summary := SummarizeResult(report)
+				text := summary.Text()
+				if summary.Conclusion != ConclusionInsufficient || !strings.Contains(text, tc.wantProgram) {
+					t.Fatalf("summary must name the %s program: %+v", tc.wantProgram, summary)
+				}
+			})
+		}
+	}
+}
+
 func TestContainerTimerBuildFailureIsReportedAndCleanedUp(t *testing.T) {
 	skipIfRoot(t)
 	f := newCandidateFixture(t)
